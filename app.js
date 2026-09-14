@@ -8,7 +8,7 @@ import categorieRoutes from './routes/CategorieRoutes.js';
 import ModeleRoutes from './routes/ModeleRoutes.js';
 import marqueRoutes from './routes/marqueRoutes.js';
 import uniteRoutes from './routes/uniteRoutes.js';
-import produitRoutes from './routes/produitRoutes.js';
+import ProduitRoutes from './routes/produitRoutes.js';
 import fournisseurRoutes from './routes/FournisseurRoutes.js';
 import commandeAchatRoutes from './routes/CommandeAchatRoutes.js';
 import receptionRoutes from './routes/ReceptionRoutes.js';
@@ -60,7 +60,7 @@ app.use('/api/categories', categorieRoutes);
 app.use('/api/modeles',ModeleRoutes)
 app.use('/api/marques', marqueRoutes);
 app.use('/api/unites', uniteRoutes);
-app.use('/api/produits', produitRoutes);
+app.use('/api/produits', ProduitRoutes);
 app.use('/api/fournisseurs', fournisseurRoutes);
 app.use('/api/commandes-achat', commandeAchatRoutes);
 app.use('/api/receptions', receptionRoutes);
