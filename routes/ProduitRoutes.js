@@ -1,6 +1,6 @@
 // routes/ProduitRoutes.js
 import express from 'express';
-import ProduitController from '../controllers/produitController.js';
+import ProduitController from '../controllers/ProduitController.js';
 import { authenticateToken } from '../middleware/middleware.js';
 import UniteVenteController from '../controllers/UniteVenteController.js';
 
