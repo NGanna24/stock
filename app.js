@@ -17,7 +17,7 @@ import commandeVenteRoutes from './routes/CommandeVenteRoutes.js';
 import paiementRoutes from './routes/PaiementRoutes.js';
 import factureRoutes from './routes/FactureRoutes.js';
 import retourClientRoutes from './routes/RetourClientRoutes.js'; 
-import MouvementStockRoutes from './routes/MouvementStockRoutes.js'; 
+import MouvementStockRoutes from './routes/MouvementStockRoutes'; 
 import inventaireRoutes from './routes/InventaireRoutes.js';
 import dashboardRoutes from './routes/DashboardRoutes.js';
 import clientRoutes from './routes/ClientRoutes.js';

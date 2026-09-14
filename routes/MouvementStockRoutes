@@ -1,4 +1,4 @@
-// routes/mouvementStockRoutes.js
+// routes/MouvementStockRoutes.js
 import express from 'express';
 import MouvementStockController from '../controllers/MouvementStockController.js';
 import { authenticateToken, authorize, requireRole } from '../middleware/middleware.js';
