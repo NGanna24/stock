@@ -7,7 +7,7 @@ import UtilisateurRoutes from './routes/UtilisateurRoutes.js';
 import categorieRoutes from './routes/CategorieRoutes.js';
 import ModeleRoutes from './routes/ModeleRoutes.js';
 import marqueRoutes from './routes/marqueRoutes.js';
-import uniteRoutes from './routes/uniteRoutes.js';
+import uniteRoutes from './routes/uniteRoutes.js'; 
 import ProduitRoutes from './routes/ProduitRoutes.js';
 import fournisseurRoutes from './routes/FournisseurRoutes.js';
 import commandeAchatRoutes from './routes/CommandeAchatRoutes.js';

@@ -13,10 +13,9 @@ router.get('/export',authenticateToken, MouvementStockController.exportMouvement
 router.get('/derniers',authenticateToken, MouvementStockController.getDerniersMouvements);
 router.get('/type/:type',authenticateToken, MouvementStockController.getMouvementsByType);
 router.get('/produit/:id_produit', authenticateToken,MouvementStockController.getMouvementsByProduit);
-
+ 
 router.get('/',authenticateToken, MouvementStockController.getAllMouvements);
 router.get('/:id', authenticateToken,MouvementStockController.getMouvementById);
 
-// ⚠️ AUCUNE route POST/PUT/DELETE — les mouvements sont automatiques
 
 export default router;

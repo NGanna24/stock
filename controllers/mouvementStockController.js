@@ -7,7 +7,7 @@ class MouvementStockController {
      * Récupérer tous les mouvements du workspace (avec filtres)
      * ============================================================
      */
-    static async getAllMouvements(req, res) {
+    static async getAllMouvements(req, res) { 
         try {
             // ✅ req.workspaceId en 2e argument
             const mouvements = await MouvementStock.findAll(req.query, req.workspaceId);
