@@ -46,8 +46,28 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Configuration CORS
+// Configuration CORS
+const allowedOrigins = (process.env.CORS_ORIGIN || '*')
+    .split(',')
+    .map(o => o.trim())
+    .filter(Boolean);
+
 app.use(cors({
-    origin: process.env.CORS_ORIGIN || '*',
+    origin: function (origin, callback) {
+        // Autoriser les requêtes sans Origin (Postman, curl, mobile)
+        if (!origin) return callback(null, true);
+        
+        // Autoriser tout si wildcard
+        if (allowedOrigins.includes('*')) return callback(null, true);
+        
+        // Vérifier si l'origine est autorisée
+        if (allowedOrigins.includes(origin)) {
+            callback(null, origin);   // ⭐ Renvoie UNE SEULE origine
+        } else {
+            console.log('❌ CORS bloqué pour :', origin);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     credentials: true
