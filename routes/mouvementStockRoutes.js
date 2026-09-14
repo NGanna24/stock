@@ -5,7 +5,7 @@ import { authenticateToken, authorize, requireRole } from '../middleware/middlew
 
 const router = express.Router();
 
-router.use(authenticateToken);
+router.use(authenticateToken); 
 
 // Routes spécifiques AVANT /:id
 router.get('/stats', authenticateToken,MouvementStockController.getMouvementsStats);
