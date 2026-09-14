@@ -1,0 +1,22 @@
+// routes/mouvementStockRoutes.js
+import express from 'express';
+import MouvementStockController from '../controllers/MouvementStockController.js';
+import { authenticateToken, authorize, requireRole } from '../middleware/middleware.js';
+
+const router = express.Router();
+
+router.use(authenticateToken);
+
+// Routes spécifiques AVANT /:id
+router.get('/stats', authenticateToken,MouvementStockController.getMouvementsStats);
+router.get('/export',authenticateToken, MouvementStockController.exportMouvements);
+router.get('/derniers',authenticateToken, MouvementStockController.getDerniersMouvements);
+router.get('/type/:type',authenticateToken, MouvementStockController.getMouvementsByType);
+router.get('/produit/:id_produit', authenticateToken,MouvementStockController.getMouvementsByProduit);
+
+router.get('/',authenticateToken, MouvementStockController.getAllMouvements);
+router.get('/:id', authenticateToken,MouvementStockController.getMouvementById);
+
+// ⚠️ AUCUNE route POST/PUT/DELETE — les mouvements sont automatiques
+
+export default router;
