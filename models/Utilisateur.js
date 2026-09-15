@@ -2,7 +2,7 @@
 import { pool } from '../config/db.js';
 import bcrypt from 'bcryptjs';
 
-class Utilisateur {
+class Utilisateur { 
     /**
      * Générer un slug à partir du nom
      */

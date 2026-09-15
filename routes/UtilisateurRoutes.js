@@ -9,10 +9,7 @@ const router = express.Router();
 router.post('/register', UtilisateurController.register);
 router.post('/login', UtilisateurController.login);
 
-// ==================== ROUTES PROTÉGÉES ====================
-// router.post('/logout', authenticateToken, UtilisateurController.logout);
-router.get('/profile', authenticateToken, UtilisateurController.getProfile); // ← Ajouté authenticateToken
-// router.put('/profile', authenticateToken, UtilisateurController.updateProfile);
-// router.put('/change-password', authenticateToken, UtilisateurController.changePassword);
+// ==================== ROUTES PROTÉGÉES ==================== 
+router.get('/profile', authenticateToken, UtilisateurController.getProfile); 
 
 export default router;

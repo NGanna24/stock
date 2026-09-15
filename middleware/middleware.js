@@ -1,15 +1,25 @@
 // middleware/middleware.js
 import jwt from 'jsonwebtoken';
 import Utilisateur from '../models/Utilisateur.js';
+import Employe from '../models/Employe.js';
 
 /**
- * Middleware d'authentification
- * Vérifie que l'utilisateur est connecté
+ * ============================================================
+ * MIDDLEWARE D'AUTHENTIFICATION UNIFIÉ
+ * ------------------------------------------------------------
+ * Gère :
+ *   - Les UTILISATEURS (table `utilisateurs`) — rôle admin
+ *   - Les EMPLOYÉS (table `employes`) — rôles caissier, magasinier...
+ *
+ * ➜ Injecte TOUJOURS le `id_utilisateur` de l'utilisateur admin
+ *   dans req.user.id_utilisateur (workspace)
+ * ➜ Tous les controllers existants continuent de fonctionner
+ * ============================================================
  */
 export const authenticateToken = (req, res, next) => {
     try {
         const authHeader = req.headers['authorization'];
-        const token = authHeader && authHeader.split (' ')[1]; // Bearer TOKEN
+        const token = authHeader && authHeader.split(' ')[1];
 
         if (!token) {
             return res.status(401).json({
@@ -25,18 +35,52 @@ export const authenticateToken = (req, res, next) => {
                     message: 'Token invalide ou expiré'
                 });
             }
- 
+
             try {
-                // Récupérer l'utilisateur complet depuis la base de données
-                const user = await Utilisateur.findById(decoded.id);
-                
-                if (!user) {
-                    return res.status(401).json({
-                        success: false,
-                        message: 'Utilisateur non trouvé'
-                    });
+                let user = null;
+                let type = null;        // 'utilisateur' | 'employe'
+                let id_workspace = null; // ⭐ id de l'admin (workspace)
+                let id_magasin = null;
+                let role = null;
+
+                // ============================================================
+                // CAS 1 : EMPLOYÉ
+                // ============================================================
+                if (decoded.type === 'employe') {
+                    user = await Employe.findById(decoded.id);
+
+                    if (!user) {
+                        return res.status(401).json({
+                            success: false,
+                            message: 'Employé introuvable'
+                        });
+                    }
+
+                    type = 'employe';
+                    id_workspace = user.id_utilisateur;   // ⭐ id de l'admin
+                    id_magasin = user.id_magasin;
+                    role = user.role_nom;
+                }
+                // ============================================================
+                // CAS 2 : UTILISATEUR (admin)
+                // ============================================================
+                else {
+                    user = await Utilisateur.findById(decoded.id);
+
+                    if (!user) {
+                        return res.status(401).json({
+                            success: false,
+                            message: 'Utilisateur introuvable'
+                        });
+                    }
+
+                    type = 'utilisateur';
+                    id_workspace = user.id_utilisateur;
+                    role = user.role_nom;
+                    id_magasin = req.headers['x-magasin-id'] || req.query.id_magasin || null;
                 }
 
+                // Vérification du statut actif
                 if (!user.actif) {
                     return res.status(403).json({
                         success: false,
@@ -44,21 +88,27 @@ export const authenticateToken = (req, res, next) => {
                     });
                 }
 
-            req.user = {
-                id: user.id_utilisateur,
-                id_utilisateur: user.id_utilisateur,
-                fullname: user.fullname,
-                telephone: user.telephone,
-                role: user.role,
-                slug: user.slug,
-                actif: user.actif
-            };
+                // ✅ Objet `user` unifié
+                req.user = {
+                    id:             user.id_utilisateur || user.id_employe,
+                    id_utilisateur: id_workspace,           // ⭐ WORKSPACE (admin)
+                    id_employe:     user.id_employe || null,
+                    type,                                    // 'utilisateur' | 'employe'
+                    id_magasin,
+                    role,                                    // 'admin' | 'caissier' | 'magasinier'...
+                    fullname:       user.fullname,
+                    telephone:      user.telephone,
+                    slug:           user.slug,
+                    actif:          user.actif
+                };
 
-            req.workspaceId = user.id_utilisateur;
-            req.userId = user.id_utilisateur;
-            req.userRole = user.role;
+                // Compatibilité avec l'ancien code
+                req.workspaceId = id_workspace;
+                req.userId = req.user.id;
+                req.userRole = role;
 
-            next();
+                next();
+
             } catch (error) {
                 console.error('❌ Auth middleware error:', error);
                 return res.status(500).json({
@@ -78,8 +128,9 @@ export const authenticateToken = (req, res, next) => {
 };
 
 /**
- * Middleware d'autorisation par rôles
- * Vérifie que l'utilisateur a le rôle requis
+ * ============================================================
+ * MIDDLEWARE D'AUTORISATION PAR RÔLES
+ * ============================================================
  */
 export const authorize = (roles) => {
     return (req, res, next) => {
@@ -91,8 +142,7 @@ export const authorize = (roles) => {
         }
 
         const userRole = req.user.role;
-        
-        // Si roles est un tableau
+
         if (Array.isArray(roles)) {
             if (!roles.includes(userRole)) {
                 return res.status(403).json({
@@ -101,9 +151,7 @@ export const authorize = (roles) => {
                     currentRole: userRole
                 });
             }
-        } 
-        // Si roles est une chaîne
-        else if (typeof roles === 'string') {
+        } else if (typeof roles === 'string') {
             if (userRole !== roles) {
                 return res.status(403).json({
                     success: false,
@@ -118,8 +166,96 @@ export const authorize = (roles) => {
 };
 
 /**
- * Middleware d'autorisation par propriétaire
- * Vérifie que l'utilisateur est le propriétaire de la ressource
+ * ============================================================
+ * MIDDLEWARE : ADMIN UNIQUEMENT (le propriétaire du compte)
+ * ============================================================
+ */
+export const isAdmin = (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({ success: false, message: 'Non authentifié' });
+    }
+    if (req.user.type !== 'utilisateur' || req.user.role !== 'admin') {
+        return res.status(403).json({
+            success: false,
+            message: 'Accès réservé à l\'administrateur'
+        });
+    }
+    next();
+};
+
+/**
+ * ============================================================
+ * MIDDLEWARE : ADMIN OU MANAGER
+ * ============================================================
+ */
+export const isAdminOrManager = (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({ success: false, message: 'Non authentifié' });
+    }
+    if (req.user.role === 'admin' || req.user.role === 'manager') {
+        return next();
+    }
+    return res.status(403).json({
+        success: false,
+        message: 'Accès refusé. Réservé à l\'administrateur ou au manager.'
+    });
+};
+
+/**
+ * ============================================================
+ * MIDDLEWARE : PERMISSIONS PAR RÔLE
+ * ------------------------------------------------------------
+ * Utilisation : router.post('/', authenticateToken, can('ventes.creer'), ctrl.create)
+ * ============================================================
+ */
+const ROLE_PERMISSIONS = {
+    admin:      ['*'],
+    manager:    ['*'],
+    caissier: [
+        'ventes.voir', 'ventes.creer', 'ventes.annuler',
+        'paiements.voir', 'paiements.creer',
+        'factures.voir', 'factures.creer',
+        'clients.voir', 'clients.creer',
+        'produits.voir',
+        'recettes.voir',
+        'retours_clients.voir', 'retours_clients.creer'
+    ],
+    magasinier: [
+        'produits.voir', 'produits.creer', 'produits.modifier',
+        'stocks.voir', 'stocks.entree', 'stocks.sortie',
+        'inventaires.voir', 'inventaires.creer',
+        'receptions.voir', 'receptions.creer',
+        'achats.voir', 'fournisseurs.voir',
+        'mouvements.voir'
+    ]
+};
+
+export const can = (permission) => {
+    return (req, res, next) => {
+        const role = req.user?.role;
+
+        if (!role) {
+            return res.status(401).json({ success: false, message: 'Non authentifié' });
+        }
+
+        const perms = ROLE_PERMISSIONS[role] || [];
+
+        if (perms.includes('*') || perms.includes(permission)) {
+            return next();
+        }
+
+        return res.status(403).json({
+            success: false,
+            message: `Permission refusée : ${permission}`,
+            currentRole: role
+        });
+    };
+};
+
+/**
+ * ============================================================
+ * MIDDLEWARE : PROPRIÉTAIRE DE LA RESSOURCE
+ * ============================================================
  */
 export const isOwner = (getResourceUserId) => {
     return async (req, res, next) => {
@@ -131,14 +267,12 @@ export const isOwner = (getResourceUserId) => {
                 });
             }
 
-            // Si l'utilisateur est admin, il peut tout faire
             if (req.user.role === 'admin') {
                 return next();
             }
 
-            // Récupérer l'ID du propriétaire de la ressource
             const resourceUserId = await getResourceUserId(req);
-            
+
             if (req.user.id !== resourceUserId) {
                 return res.status(403).json({
                     success: false,
@@ -158,8 +292,9 @@ export const isOwner = (getResourceUserId) => {
 };
 
 /**
- * Middleware de vérification des permissions
- * Vérifie des permissions spécifiques
+ * ============================================================
+ * MIDDLEWARE : VÉRIFICATION PERMISSIONS (ancienne API)
+ * ============================================================
  */
 export const hasPermission = (permission) => {
     return async (req, res, next) => {
@@ -171,15 +306,14 @@ export const hasPermission = (permission) => {
                 });
             }
 
-            // Récupérer les permissions de l'utilisateur depuis la base de données
-            // Cette partie dépend de votre système de permissions
-            const userPermissions = await getUserPermissions(req.user.id);
-            
-            if (!userPermissions.includes(permission)) {
+            const role = req.user.role;
+            const perms = ROLE_PERMISSIONS[role] || [];
+
+            if (!perms.includes('*') && !perms.includes(permission)) {
                 return res.status(403).json({
                     success: false,
                     message: `Permission requise: ${permission}`,
-                    currentPermissions: userPermissions
+                    currentRole: role
                 });
             }
 
@@ -195,7 +329,9 @@ export const hasPermission = (permission) => {
 };
 
 /**
- * Middleware de limitation de taux (Rate Limiting)
+ * ============================================================
+ * MIDDLEWARE : RATE LIMITING
+ * ============================================================
  */
 export const rateLimit = (maxRequests, windowMs = 60000) => {
     const requests = new Map();
@@ -210,7 +346,7 @@ export const rateLimit = (maxRequests, windowMs = 60000) => {
 
         const userRequests = requests.get(key);
         const validRequests = userRequests.filter(time => now - time < windowMs);
-        
+
         if (validRequests.length >= maxRequests) {
             return res.status(429).json({
                 success: false,
@@ -221,7 +357,6 @@ export const rateLimit = (maxRequests, windowMs = 60000) => {
         validRequests.push(now);
         requests.set(key, validRequests);
 
-        // Nettoyer les anciennes requêtes
         setTimeout(() => {
             const current = requests.get(key) || [];
             requests.set(key, current.filter(time => now - time < windowMs));
@@ -232,12 +367,13 @@ export const rateLimit = (maxRequests, windowMs = 60000) => {
 };
 
 /**
- * Middleware de journalisation
+ * ============================================================
+ * MIDDLEWARE : JOURNALISATION
+ * ============================================================
  */
 export const logRequest = (req, res, next) => {
     const start = Date.now();
-    
-    // Journaliser après la réponse
+
     res.on('finish', () => {
         const duration = Date.now() - start;
         const log = {
@@ -248,9 +384,10 @@ export const logRequest = (req, res, next) => {
             duration: `${duration}ms`,
             ip: req.ip || req.connection.remoteAddress,
             user: req.user?.id || 'anonymous',
+            userType: req.user?.type || 'unknown',
             userAgent: req.headers['user-agent']
         };
-        
+
         console.log('📝 Request log:', JSON.stringify(log));
     });
 
@@ -258,14 +395,16 @@ export const logRequest = (req, res, next) => {
 };
 
 /**
- * Middleware de validation des rôles (version simplifiée)
+ * ============================================================
+ * MIDDLEWARE : VALIDATION DES RÔLES (simplifié)
+ * ============================================================
  */
 export const requireRole = (allowedRoles) => {
     return (req, res, next) => {
         if (!req.user) {
             return res.status(401).json({
                 success: false,
-                message: 'Non authentifié' 
+                message: 'Non authentifié'
             });
         }
 
@@ -285,6 +424,9 @@ export const requireRole = (allowedRoles) => {
 export default {
     authenticateToken,
     authorize,
+    isAdmin,
+    isAdminOrManager,
+    can,
     isOwner,
     hasPermission,
     rateLimit,

@@ -1,6 +1,9 @@
 // controllers/UtilisateurController.js
 import jwt from "jsonwebtoken";
 import Utilisateur from '../models/Utilisateur.js';
+ import Magasin from '../models/Magasin.js';
+ import Employe from '../models/Employe.js';
+
 
 const JWT_EXPIRES_IN = '30d';
 
@@ -14,84 +17,98 @@ function generateToken(userId, telephone, role) {
 }
 
 class UtilisateurController {
+
+
     /**
-     * INSCRIPTION d'un nouvel utilisateur
-     * Le rôle est automatiquement défini comme 'client'
-     * ⚠️ AUCUN rôle ne vient du frontend pour des raisons de sécurité
-     */
-    static async register(req, res) {
-        try {
-            // ⚠️ On n'accepte PAS de rôle dans la requête
-            const { fullname, telephone, password, email } = req.body;
+ * INSCRIPTION d'un nouvel utilisateur
+ * Le rôle est automatiquement défini comme 'client'
+ * ⚠️ AUCUN rôle ne vient du frontend pour des raisons de sécurité
+ * ✅ NOUVEAU : Crée automatiquement le magasin
+ */
+static async register(req, res) {
+    try {
+        // ⚠️ On n'accepte PAS de rôle dans la requête
+        const { fullname, telephone, password, email } = req.body;
 
-            // Validation des données
-            if (!fullname || !telephone || !password) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Nom, téléphone et mot de passe sont obligatoires'
-                });
-            }
-
-            // Validation du mot de passe (4 chiffres)
-            if (!/^\d{4}$/.test(password)) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Le mot de passe doit contenir exactement 4 chiffres'
-                });
-            }
-
-            // Nettoyer le numéro de téléphone
-            const cleanedTelephone = telephone.replace(/\s/g, '');
-
-            // Vérifier si l'utilisateur existe déjà
-            const existingUser = await Utilisateur.findOnly(cleanedTelephone);
-
-            if (existingUser) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Un utilisateur avec ce numéro existe déjà'
-                });
-            }
-
-            // Créer l'utilisateur - Le rôle 'client' est automatiquement attribué
-            const userId = await Utilisateur.create({
-                fullname,
-                telephone: cleanedTelephone,
-                password,
-                email: email || null
-                // ⚠️ PAS de rôle ici !
-            });
-
-            // Récupérer l'utilisateur créé
-            const newUser = await Utilisateur.findById(userId);
-
-            // Générer le token avec le nom du rôle
-            const token = generateToken(newUser.id_utilisateur, newUser.telephone, newUser.role_nom);
-
-            return res.status(201).json({
-                success: true,
-                message: 'Utilisateur créé avec succès', 
-                token,
-                user: {
-                    id: newUser.id_utilisateur,
-                    slug: newUser.slug,
-                    fullname: newUser.fullname,
-                    telephone: newUser.telephone,
-                    email: newUser.email,
-                    role: newUser.role_nom, // ← Le rôle vient de la BD, PAS du frontend
-                    actif: newUser.actif
-                }
-            });
-
-        } catch (error) {
-            console.error('❌ Register error:', error);
-            return res.status(500).json({
+        // Validation des données
+        if (!fullname || !telephone || !password) {
+            return res.status(400).json({
                 success: false,
-                message: 'Erreur lors de la création du compte',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+                message: 'Nom, téléphone et mot de passe sont obligatoires'
             });
         }
+
+        // Validation du mot de passe (4 chiffres)
+        if (!/^\d{4}$/.test(password)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Le mot de passe doit contenir exactement 4 chiffres'
+            });
+        }
+
+        // Nettoyer le numéro de téléphone
+        const cleanedTelephone = telephone.replace(/\s/g, '');
+
+        // Vérifier si l'utilisateur existe déjà
+        const existingUser = await Utilisateur.findOnly(cleanedTelephone);
+
+        if (existingUser) {
+            return res.status(400).json({
+                success: false,
+                message: 'Un utilisateur avec ce numéro existe déjà'
+            });
+        }
+
+        // Créer l'utilisateur - Le rôle 'client' est automatiquement attribué
+        const userId = await Utilisateur.create({
+            fullname,
+            telephone: cleanedTelephone,
+            password,
+            email: email || null
+            // ⚠️ PAS de rôle ici !
+        });
+
+        // ✅ NOUVEAU : Créer automatiquement le magasin du patron
+        try {
+            await Magasin.create(userId, {
+                telephone: cleanedTelephone
+            });
+            console.log(`✅ Magasin créé automatiquement pour l'utilisateur ${userId}`);
+        } catch (magasinError) {
+            console.error('⚠️ Erreur création magasin (non bloquant):', magasinError);
+            // On ne bloque PAS l'inscription si la création du magasin échoue
+        }
+
+        // Récupérer l'utilisateur créé
+        const newUser = await Utilisateur.findById(userId);
+
+        // Générer le token avec le nom du rôle
+        const token = generateToken(newUser.id_utilisateur, newUser.telephone, newUser.role_nom);
+
+        return res.status(201).json({
+            success: true,
+            message: 'Utilisateur créé avec succès', 
+            token,
+            user: {
+                id: newUser.id_utilisateur,
+                slug: newUser.slug,
+                fullname: newUser.fullname,
+                telephone: newUser.telephone,
+                email: newUser.email,
+                role: newUser.role_nom, // ← Le rôle vient de la BD, PAS du frontend
+                actif: newUser.actif
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Register error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Erreur lors de la création du compte',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
+}
 
     /**
      * CRÉER un utilisateur avec un rôle spécifique (UNIQUEMENT pour Admin)
@@ -172,72 +189,107 @@ class UtilisateurController {
         }
     }
 
-    /**
-     * CONNEXION d'un utilisateur
-     */
-    static async login(req, res) {
-        try {
-            const { telephone, password } = req.body;
+/**
+ * CONNEXION d'un utilisateur OU d'un employé
+ * Cherche d'abord dans `utilisateurs`, puis dans `employes`
+ */
+static async login(req, res) {
+    try {
+        const { telephone, password } = req.body;
 
-            if (!telephone || !password) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Téléphone et mot de passe sont obligatoires'
-                });
-            }
-
-            const cleanedTelephone = telephone.replace(/\s/g, '');
-            const user = await Utilisateur.findOnly(cleanedTelephone);
-
-            if (!user) {
-                return res.status(401).json({
-                    success: false,
-                    message: 'Identifiants invalides'
-                });
-            }
-
-            if (!user.actif) {
-                return res.status(403).json({
-                    success: false,
-                    message: 'Compte désactivé. Veuillez contacter l\'administrateur.'
-                });
-            }
-
-            const isValidPassword = await Utilisateur.verifyPassword(user.id_utilisateur, password);
-
-            if (!isValidPassword) {
-                return res.status(401).json({
-                    success: false,
-                    message: 'Identifiants invalides'
-                });
-            }
-
-            const token = generateToken(user.id_utilisateur, user.telephone, user.role_nom);
-            await Utilisateur.updateLastLogin(user.id_utilisateur);
-
-            return res.status(200).json({
-                success: true,
-                message: 'Connexion réussie',
-                token,
-                user: {
-                    id: user.id_utilisateur,
-                    slug: user.slug,
-                    fullname: user.fullname,
-                    telephone: user.telephone,
-                    email: user.email,
-                    role: user.role_nom,
-                    actif: user.actif
-                }
-            });
-
-        } catch (error) {
-            console.error('❌ Login error:', error);
-            return res.status(500).json({
+        if (!telephone || !password) {
+            return res.status(400).json({
                 success: false,
-                message: 'Erreur lors de la connexion'
+                message: 'Téléphone et mot de passe sont obligatoires'
             });
         }
+
+        const cleanedTelephone = telephone.replace(/\s/g, '');
+
+        // 1️⃣ Chercher dans les UTILISATEURS (admin)
+        let user = await Utilisateur.findOnly(cleanedTelephone);
+        let type = 'utilisateur';
+
+        // 2️⃣ Sinon, chercher dans les EMPLOYÉS
+        if (!user) {
+            user = await Employe.findByTelephone(cleanedTelephone);
+            type = 'employe';
+        }
+
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: 'Identifiants invalides'
+            });
+        }
+
+        if (!user.actif) {
+            return res.status(403).json({
+                success: false,
+                message: 'Compte désactivé. Veuillez contacter l\'administrateur.'
+            });
+        }
+
+        // Vérifier le mot de passe selon le type
+        let isValidPassword = false;
+        if (type === 'utilisateur') {
+            isValidPassword = await Utilisateur.verifyPassword(user.id_utilisateur, password);
+        } else {
+            isValidPassword = await Employe.verifyPassword(user.id_employe, password);
+        }
+
+        if (!isValidPassword) {
+            return res.status(401).json({
+                success: false,
+                message: 'Identifiants invalides'
+            });
+        }
+
+        // Générer le token (avec le `type` pour le middleware)
+        const id = type === 'utilisateur' ? user.id_utilisateur : user.id_employe;
+        const token = jwt.sign(
+            {
+                id,
+                telephone: user.telephone,
+                role: user.role_nom,
+                type                          // ⭐ 'utilisateur' | 'employe'
+            },
+            process.env.JWT_SECRET || 'your-secret-key',
+            { expiresIn: JWT_EXPIRES_IN }
+        );
+
+        // Maj dernière connexion
+        if (type === 'utilisateur') {
+            await Utilisateur.updateLastLogin(user.id_utilisateur);
+        } else {
+            await Employe.updateLastLogin(user.id_employe);
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: 'Connexion réussie',
+            token,
+            user: {
+                id,
+                type,                                                       // 'utilisateur' | 'employe'
+                slug: type === 'utilisateur' ? user.slug : user.slug_patron, // toujours le slug du compte admin
+                fullname: user.fullname,
+                telephone: user.telephone,
+                email: user.email || null,
+                role: user.role_nom,
+                id_magasin: type === 'employe' ? user.id_magasin : null,
+                actif: user.actif
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Login error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Erreur lors de la connexion'
+        });
     }
+}
 
     /**
      * RÉCUPÉRER le profil de l'utilisateur connecté

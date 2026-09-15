@@ -33,6 +33,68 @@ CREATE TABLE IF NOT EXISTS utilisateurs (
     FOREIGN KEY (id_role) REFERENCES roles(id_role) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+
+
+CREATE TABLE IF NOT EXISTS magasins (
+    id_magasin INT PRIMARY KEY AUTO_INCREMENT,
+    id_utilisateur INT NOT NULL,
+
+    -- ========== IDENTITÉ COMMERCIALE ==========
+    nom_commercial VARCHAR(200),
+    slogan VARCHAR(200),
+    logo_url VARCHAR(500),
+    description TEXT,
+
+    -- ========== COORDONNÉES (ADAPTÉES AFRIQUE) ==========
+    quartier VARCHAR(100),
+    ville VARCHAR(100),
+    pays VARCHAR(100),
+    telephone VARCHAR(20),
+    telephone2 VARCHAR(20),
+    whatsapp VARCHAR(20),
+    email VARCHAR(150),
+
+    -- ========== INFORMATIONS LÉGALES ==========
+    numero_rccm VARCHAR(50),
+    numero_nif VARCHAR(50),
+    numero_contribuable VARCHAR(50),
+    regime_fiscal VARCHAR(50),
+
+    -- ========== MÉTADONNÉES ==========
+    actif BOOLEAN DEFAULT TRUE,
+    date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
+    date_modification DATETIME ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_utilisateur (id_utilisateur),
+    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS employes (
+    id_employe INT PRIMARY KEY AUTO_INCREMENT,
+    id_utilisateur INT NOT NULL,          -- LE PATRON (workspace)
+    id_magasin INT NOT NULL,              -- magasin où il travaille
+    id_role INT NOT NULL,                 -- caissier, magasinier...
+    fullname VARCHAR(100) NOT NULL,
+    slug VARCHAR(100) NOT NULL,
+    telephone VARCHAR(20) NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    actif BOOLEAN DEFAULT TRUE,
+    date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
+    derniere_connexion TIMESTAMP NULL DEFAULT NULL,
+
+    INDEX idx_utilisateur (id_utilisateur),
+    INDEX idx_magasin (id_magasin),
+    INDEX idx_role (id_role),
+    INDEX idx_telephone (telephone),
+
+    UNIQUE KEY unique_telephone_par_patron (telephone, id_utilisateur),
+    UNIQUE KEY unique_slug_par_patron (slug, id_utilisateur),
+
+    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
+    FOREIGN KEY (id_magasin) REFERENCES magasins(id_magasin) ON DELETE CASCADE,
+    FOREIGN KEY (id_role) REFERENCES roles(id_role) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ 
 -- =============================================================================
 -- CLIENTS
 -- =============================================================================
@@ -287,7 +349,7 @@ CREATE TABLE IF NOT EXISTS reception_lignes (
 
     etat_marchandise ENUM('bon', 'endommager', 'manquant', 'partiel') DEFAULT 'bon',
     num_lot VARCHAR(100),
-    date_peremption DATE,
+    date_peremption DATE, 
     notes TEXT,
 
     INDEX idx_reception (id_reception),
