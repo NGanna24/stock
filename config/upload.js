@@ -13,7 +13,6 @@ const UPLOAD_DIR = path.join(__dirname, '..', 'uploads', 'magasins');
 // Créer le dossier s'il n'existe pas
 if (!fs.existsSync(UPLOAD_DIR)) {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-    console.log(`📁 Dossier créé : ${UPLOAD_DIR}`);
 }
 
 // ==================== STORAGE ====================

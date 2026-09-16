@@ -305,14 +305,7 @@ class ProduitController {
                 });
             }
 
-            // ✅ Vérifier les unités de vente
-            if (!unites_vente || unites_vente.length === 0) {
-                await connection.rollback();
-                return res.status(400).json({
-                    success: false,
-                    message: 'Au moins une unité de vente est requise'
-                });
-            }
+            
 
             for (const unite of unites_vente) {
                 if (!unite.nom || !unite.nom.trim()) {
