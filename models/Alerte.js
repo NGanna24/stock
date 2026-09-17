@@ -6,6 +6,7 @@ class Alerte {
      * ============================================================
      * LISTE DES ALERTES DE STOCK (à partir des produits)
      * Calcule dynamiquement : rupture, stock bas, surstock
+     * ✅ Retourne unite_nom, unite_symbole + unité de vente principale
      * ============================================================
      */
     static async findAll(id_utilisateur) {
@@ -27,9 +28,14 @@ class Alerte {
                 p.etagere,
                 c.nom AS categorie_nom,
                 m.nom AS marque_nom,
+                u.nom AS unite_nom,
                 u.symbole AS unite_symbole,
                 f.nom AS fournisseur_nom,
                 f.telephone AS fournisseur_telephone,
+                -- ✅ Unité de vente principale du produit (ex: carton)
+                uv_principal.nom AS unite_vente_nom,
+                uv_principal.quantite_base AS unite_vente_quantite_base,
+                uv_principal.prix_achat AS unite_vente_prix_achat,
                 CASE
                     WHEN p.quantite_stock <= 0 THEN 'rupture'
                     WHEN p.quantite_stock <= p.quantite_minimale THEN 'stock_bas'
@@ -51,6 +57,11 @@ class Alerte {
              LEFT JOIN marques m ON p.id_marque = m.id_marque
              LEFT JOIN unites u ON p.id_unite = u.id_unite
              LEFT JOIN fournisseurs f ON p.id_fournisseur = f.id_fournisseur
+             -- ✅ Sous-requête : unité de vente principale du produit
+             LEFT JOIN unites_vente uv_principal
+                ON uv_principal.id_produit = p.id_produit
+                AND uv_principal.est_principal = TRUE
+                AND uv_principal.actif = TRUE
              WHERE p.id_utilisateur = ?
                AND (
                     p.quantite_stock <= 0
@@ -63,19 +74,33 @@ class Alerte {
             [id_utilisateur]
         );
 
-        return rows.map(r => ({
-            ...r,
-            quantite_stock: parseFloat(r.quantite_stock) || 0,
-            quantite_minimale: parseFloat(r.quantite_minimale) || 0,
-            quantite_maximale: parseFloat(r.quantite_maximale) || 0,
-            prix_achat: parseFloat(r.prix_achat) || 0,
-            // Calcul des manques
-            quantite_a_commander: r.type_alerte === 'rupture' || r.type_alerte === 'stock_bas'
-                ? Math.max(0, (parseFloat(r.quantite_maximale) || parseFloat(r.quantite_minimale) * 2 || 10) - (parseFloat(r.quantite_stock) || 0))
-                : 0,
-            valeur_manque: (parseFloat(r.prix_achat) || 0) * Math.max(0,
-                (parseFloat(r.quantite_maximale) || parseFloat(r.quantite_minimale) * 2 || 10) - (parseFloat(r.quantite_stock) || 0))
-        }));
+        return rows.map(r => {
+            const stock = parseFloat(r.quantite_stock) || 0;
+            const min = parseFloat(r.quantite_minimale) || 0;
+            const max = parseFloat(r.quantite_maximale) || 0;
+            const prixAchat = parseFloat(r.prix_achat) || 0;
+
+            // Objectif de réapprovisionnement (max, sinon min*2, sinon 10)
+            const objectif = max > 0 ? max : (min > 0 ? min * 2 : 10);
+            const qteACmd = (r.type_alerte === 'rupture' || r.type_alerte === 'stock_bas')
+                ? Math.max(0, objectif - stock)
+                : 0;
+
+            return {
+                ...r,
+                quantite_stock: stock,
+                quantite_minimale: min,
+                quantite_maximale: max,
+                prix_achat: prixAchat,
+                quantite_a_commander: qteACmd,
+                valeur_manque: prixAchat * qteACmd,
+                // ✅ Conversion en unités de vente
+                quantite_a_commander_unite_vente:
+                    r.unite_vente_quantite_base > 0
+                        ? Math.ceil(qteACmd / parseFloat(r.unite_vente_quantite_base))
+                        : null
+            };
+        });
     }
 
     /**
@@ -97,7 +122,7 @@ class Alerte {
                 COALESCE(SUM(
                     CASE
                         WHEN quantite_stock <= 0 OR quantite_stock <= quantite_minimale
-                        THEN (COALESCE(quantite_maximale, quantite_minimale * 2, 10) - quantite_stock) * prix_achat
+                        THEN (COALESCE(NULLIF(quantite_maximale, 0), quantite_minimale * 2, 10) - quantite_stock) * prix_achat
                         ELSE 0
                     END
                 ), 0) AS valeur_reapprovisionnement
@@ -179,7 +204,7 @@ class Alerte {
                 COALESCE(SUM(
                     CASE
                         WHEN p.quantite_stock <= 0 OR p.quantite_stock <= p.quantite_minimale
-                        THEN (COALESCE(p.quantite_maximale, p.quantite_minimale * 2, 10) - p.quantite_stock) * p.prix_achat
+                        THEN (COALESCE(NULLIF(p.quantite_maximale, 0), p.quantite_minimale * 2, 10) - p.quantite_stock) * p.prix_achat
                         ELSE 0
                     END
                 ), 0) AS valeur_a_commander
@@ -226,14 +251,21 @@ class Alerte {
                 p.prix_achat,
                 c.nom AS categorie_nom,
                 m.nom AS marque_nom,
+                u.nom AS unite_nom,
                 u.symbole AS unite_symbole,
                 f.nom AS fournisseur_nom,
-                f.telephone AS fournisseur_telephone
+                f.telephone AS fournisseur_telephone,
+                uv_principal.nom AS unite_vente_nom,
+                uv_principal.quantite_base AS unite_vente_quantite_base
              FROM produits p
              LEFT JOIN categories c ON p.id_categorie = c.id_categorie
              LEFT JOIN marques m ON p.id_marque = m.id_marque
              LEFT JOIN unites u ON p.id_unite = u.id_unite
              LEFT JOIN fournisseurs f ON p.id_fournisseur = f.id_fournisseur
+             LEFT JOIN unites_vente uv_principal
+                ON uv_principal.id_produit = p.id_produit
+                AND uv_principal.est_principal = TRUE
+                AND uv_principal.actif = TRUE
              WHERE p.id_utilisateur = ?
                AND p.quantite_stock <= 0
              ORDER BY p.nom ASC`,
@@ -268,14 +300,21 @@ class Alerte {
                 p.prix_achat,
                 c.nom AS categorie_nom,
                 m.nom AS marque_nom,
+                u.nom AS unite_nom,
                 u.symbole AS unite_symbole,
                 f.nom AS fournisseur_nom,
-                f.telephone AS fournisseur_telephone
+                f.telephone AS fournisseur_telephone,
+                uv_principal.nom AS unite_vente_nom,
+                uv_principal.quantite_base AS unite_vente_quantite_base
              FROM produits p
              LEFT JOIN categories c ON p.id_categorie = c.id_categorie
              LEFT JOIN marques m ON p.id_marque = m.id_marque
              LEFT JOIN unites u ON p.id_unite = u.id_unite
              LEFT JOIN fournisseurs f ON p.id_fournisseur = f.id_fournisseur
+             LEFT JOIN unites_vente uv_principal
+                ON uv_principal.id_produit = p.id_produit
+                AND uv_principal.est_principal = TRUE
+                AND uv_principal.actif = TRUE
              WHERE p.id_utilisateur = ?
                AND p.quantite_stock > 0
                AND p.quantite_stock <= p.quantite_minimale

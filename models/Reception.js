@@ -29,436 +29,431 @@ class Reception {
         return `REC-${annee}${mois}-${String(count).padStart(4, '0')}`;
     }
 
-/**
- * ============================================================
- * ✅ Créer une nouvelle réception (SANS CALCUL AUTOMATIQUE)
- * ============================================================
- * RÈGLES ABSOLUES :
- *  - AUCUN prix n'est calculé automatiquement.
- *  - Chaque prix est SAISI par l'utilisateur et stocké tel quel.
- *  - Le prix de vente n'est JAMAIS touché.
- *  - Le prix d'achat est stocké tel quel (peut être null).
- *
- * STOCK :
- *  - quantite_totale_base = quantite_recue × quantite_base
- *  - C'est le SEUL endroit qui fait UPDATE produits.quantite_stock
- */
-static async create(data) {
-    const {
-        id_commande_achat = null,
-        date_reception,
-        notes = null,
-        id_utilisateur,
-        lignes = []
-    } = data;
+    /**
+     * ============================================================
+     * ✅ Créer une nouvelle réception
+     *    - ACCEPTE les réceptions partielles (écart > 0)
+     *    - ACCEPTE les surplus (écart < 0)
+     *    - Met à jour le stock avec quantite_recue RÉELLE
+     *    - Recalcule le statut de la commande
+     * ============================================================
+     */
+    static async create(data) {
+        const {
+            id_commande_achat = null,
+            date_reception,
+            notes = null,
+            id_utilisateur,
+            lignes = []
+        } = data;
 
-    if (!id_utilisateur) {
-        throw new Error('id_utilisateur requis');
-    }
-
-    const connection = await pool.getConnection();
-    try {
-        await connection.beginTransaction();
-
-        // ============================================================
-        // 1. VALIDATIONS
-        // ============================================================
-        if (!date_reception) {
-            throw new Error('La date de réception est obligatoire');
-        }
-        if (!Array.isArray(lignes) || lignes.length === 0) {
-            throw new Error('Au moins un produit est requis pour une réception');
+        if (!id_utilisateur) {
+            throw new Error('id_utilisateur requis');
         }
 
-        // ============================================================
-        // 2. VÉRIFICATION DE LA COMMANDE
-        // ============================================================
-        if (id_commande_achat) {
-            const [commandeCheck] = await connection.execute(
-                `SELECT ca.*, f.nom AS fournisseur_nom
-                 FROM commandes_achat ca
-                 LEFT JOIN fournisseurs f ON ca.id_fournisseur = f.id_fournisseur
-                 WHERE ca.id_commande_achat = ?
-                   AND ca.id_utilisateur = ?`,
-                [id_commande_achat, id_utilisateur]
-            );
+        const connection = await pool.getConnection();
+        try {
+            await connection.beginTransaction();
 
-            if (commandeCheck.length === 0) {
-                throw new Error('Commande d\'achat non trouvée');
+            // ============================================================
+            // 1. VALIDATIONS
+            // ============================================================
+            if (!date_reception) {
+                throw new Error('La date de réception est obligatoire');
+            }
+            if (!Array.isArray(lignes) || lignes.length === 0) {
+                throw new Error('Au moins un produit est requis pour une réception');
             }
 
-            const commande = commandeCheck[0];
-
-            if (commande.statut === 'recue') {
-                throw new Error(`La commande ${commande.numero_commande} a déjà été entièrement reçue`);
-            }
-            if (commande.statut === 'annulee') {
-                throw new Error(`La commande ${commande.numero_commande} est annulée`);
-            }
-
-            const [receptionComplete] = await connection.execute(
-                `SELECT COUNT(*) AS count FROM receptions
-                 WHERE id_commande_achat = ?
-                   AND id_utilisateur = ?
-                   AND statut = 'complete'`,
-                [id_commande_achat, id_utilisateur]
-            );
-
-            if (receptionComplete[0].count > 0) {
-                throw new Error(`Une réception complète existe déjà pour la commande ${commande.numero_commande}`);
-            }
-        }
-
-        // ============================================================
-        // 3. VÉRIFICATION DES LIGNES + CALCUL DES QUANTITÉS DE BASE
-        // ============================================================
-        const lignesCalculees = [];
-
-        for (const ligne of lignes) {
-            const {
-                id_produit,
-                id_ligne_achat = null,
-                id_unite_vente = null,
-                nom_unite_vente = 'Unité',
-                quantite_base = 1,
-                quantite_commandee = 0,
-                quantite_recue,
-                quantite_totale_base = null,
-                prix_achat_unite_vente = null,
-                prix_achat_base = null,       // ← SAISI par l'utilisateur (ou null)
-                etat_marchandise = 'bon',
-                num_lot = null,
-                date_peremption = null,
-                notes_ligne = null
-            } = ligne;
-
-            // --- Vérifier le produit ---
-            const [produitRows] = await connection.execute(
-                `SELECT id_produit, nom, prix_achat, prix_vente, quantite_stock
-                 FROM produits
-                 WHERE id_produit = ? AND id_utilisateur = ?`,
-                [id_produit, id_utilisateur]
-            );
-
-            if (produitRows.length === 0) {
-                throw new Error(`Produit ID ${id_produit} non trouvé`);
-            }
-
-            if (!quantite_recue || parseFloat(quantite_recue) <= 0) {
-                throw new Error(`La quantité reçue pour ${produitRows[0].nom} doit être positive`);
-            }
-
-            // --- Déterminer quantite_base ---
-            let qteBase = parseFloat(quantite_base) || 1;
-            if (id_unite_vente) {
-                const [uvRows] = await connection.execute(
-                    `SELECT quantite_base FROM unites_vente
-                     WHERE id_unite_vente = ? AND id_produit = ?`,
-                    [id_unite_vente, id_produit]
+            // ============================================================
+            // 2. VÉRIFICATION DE LA COMMANDE
+            // ============================================================
+            if (id_commande_achat) {
+                const [commandeCheck] = await connection.execute(
+                    `SELECT ca.*, f.nom AS fournisseur_nom
+                     FROM commandes_achat ca
+                     LEFT JOIN fournisseurs f ON ca.id_fournisseur = f.id_fournisseur
+                     WHERE ca.id_commande_achat = ?
+                       AND ca.id_utilisateur = ?`,
+                    [id_commande_achat, id_utilisateur]
                 );
-                if (uvRows.length > 0) {
-                    qteBase = parseFloat(uvRows[0].quantite_base) || 1;
+
+                if (commandeCheck.length === 0) {
+                    throw new Error('Commande d\'achat non trouvée');
+                }
+
+                const commande = commandeCheck[0];
+
+                if (commande.statut === 'recue') {
+                    throw new Error(`La commande ${commande.numero_commande} a déjà été entièrement reçue`);
+                }
+                if (commande.statut === 'annulee') {
+                    throw new Error(`La commande ${commande.numero_commande} est annulée`);
+                }
+
+                const [receptionComplete] = await connection.execute(
+                    `SELECT COUNT(*) AS count FROM receptions
+                     WHERE id_commande_achat = ?
+                       AND id_utilisateur = ?
+                       AND statut = 'complete'`,
+                    [id_commande_achat, id_utilisateur]
+                );
+
+                if (receptionComplete[0].count > 0) {
+                    throw new Error(`Une réception complète existe déjà pour la commande ${commande.numero_commande}`);
                 }
             }
-
-            // --- Quantité totale en unité de base ---
-            const qteTotaleBase = quantite_totale_base !== null
-                ? parseFloat(quantite_totale_base)
-                : parseFloat(quantite_recue) * qteBase;
-
-            // --- Vérifier que la quantité reçue ne dépasse pas la commandée ---
-            if (quantite_commandee && parseFloat(quantite_commandee) > 0) {
-                const qteCommandeeBase = parseFloat(quantite_commandee) * qteBase;
-                if (qteTotaleBase > qteCommandeeBase) {
-                    throw new Error(
-                        `La quantité reçue (${qteTotaleBase} unités de base) pour ` +
-                        `${produitRows[0].nom} dépasse la quantité commandée ` +
-                        `(${qteCommandeeBase} unités de base)`
-                    );
-                }
-            }
-
-            // --- Prix d'achat unité de vente (SAISI par l'utilisateur) ---
-            let prixAchatUV = null;
-            if (
-                prix_achat_unite_vente !== null &&
-                prix_achat_unite_vente !== undefined &&
-                prix_achat_unite_vente !== ''
-            ) {
-                const parsed = parseFloat(prix_achat_unite_vente);
-                if (!isNaN(parsed) && parsed > 0) {
-                    prixAchatUV = parsed;
-                }
-            }
-
-            // --- Prix d'achat unité de base (SAISI par l'utilisateur, PAS CALCULÉ) ---
-            let prixAchatBase = null;
-            if (
-                prix_achat_base !== null &&
-                prix_achat_base !== undefined &&
-                prix_achat_base !== ''
-            ) {
-                const parsed = parseFloat(prix_achat_base);
-                if (!isNaN(parsed) && parsed > 0) {
-                    prixAchatBase = parsed;
-                }
-            }
-
-            lignesCalculees.push({
-                id_produit,
-                id_ligne_achat,
-                id_unite_vente,
-                nom_unite_vente,
-                quantite_base: qteBase,
-                quantite_commandee: parseFloat(quantite_commandee) || 0,
-                quantite_recue: parseFloat(quantite_recue),
-                quantite_totale_base: qteTotaleBase,
-                prix_achat_unite_vente: prixAchatUV,
-                prix_achat_base: prixAchatBase,   // ← jamais calculé
-                etat_marchandise,
-                num_lot,
-                date_peremption,
-                notes_ligne
-            });
-        }
-
-        // ============================================================
-        // 4. GÉNÉRATION DU NUMÉRO
-        // ============================================================
-        const numero_reception = await this.genererNumero(id_utilisateur);
-
-        // ============================================================
-        // 5. CRÉATION DE L'EN-TÊTE
-        // ============================================================
-        const [result] = await connection.execute(
-            `INSERT INTO receptions (
-                id_utilisateur, numero_reception, date_reception,
-                id_commande_achat, statut, montant_total, notes
-            ) VALUES (?, ?, ?, ?, 'en_attente', 0.00, ?)`,
-            [
-                id_utilisateur,
-                numero_reception,
-                date_reception,
-                id_commande_achat,
-                notes
-            ]
-        );
-
-        const id_reception = result.insertId;
-
-        // ============================================================
-        // 6. TRAITEMENT DES LIGNES
-        // ============================================================
-        let montant_total = 0;
-        let statut_reception = 'complete';
-
-        for (const lc of lignesCalculees) {
-            const ecart = lc.quantite_commandee - lc.quantite_recue;
-            if (ecart > 0 && statut_reception === 'complete') {
-                statut_reception = 'partielle';
-            }
-
-            // Montant ligne = quantite_recue × prix_achat_unite_vente (SAISI)
-            const montantLigne = lc.prix_achat_unite_vente
-                ? lc.quantite_recue * lc.prix_achat_unite_vente
-                : null;
-            if (montantLigne !== null) {
-                montant_total += montantLigne;
-            }
-
-            // --- Insérer la ligne de réception ---
-            await connection.execute(
-                `INSERT INTO reception_lignes (
-                    id_reception, id_produit, id_ligne_achat,
-                    id_unite_vente, nom_unite_vente, quantite_base, quantite_totale_base,
-                    quantite_commandee, quantite_recue, ecart,
-                    prix_achat_unite_vente, prix_achat_base, montant_total,
-                    etat_marchandise, num_lot, date_peremption, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    id_reception,
-                    lc.id_produit,
-                    lc.id_ligne_achat,
-                    lc.id_unite_vente,
-                    lc.nom_unite_vente,
-                    lc.quantite_base,
-                    lc.quantite_totale_base,
-                    lc.quantite_commandee,
-                    lc.quantite_recue,
-                    ecart,
-                    lc.prix_achat_unite_vente,
-                    lc.prix_achat_base,
-                    montantLigne,
-                    lc.etat_marchandise,
-                    lc.num_lot,
-                    lc.date_peremption,
-                    lc.notes_ligne
-                ]
-            );
 
             // ============================================================
-            // ✅ SEUL ENDROIT QUI MODIFIE LE STOCK
+            // 3. VÉRIFICATION DES LIGNES + CALCUL DES QUANTITÉS
             // ============================================================
-            const [stockRows] = await connection.execute(
-                `SELECT quantite_stock FROM produits
-                 WHERE id_produit = ? AND id_utilisateur = ?`,
-                [lc.id_produit, id_utilisateur]
-            );
-            const ancienne_qte = parseFloat(stockRows[0]?.quantite_stock) || 0;
-            const nouvelle_qte = ancienne_qte + lc.quantite_totale_base;
+            const lignesCalculees = [];
 
-            await connection.execute(
-                `UPDATE produits SET quantite_stock = ?
-                 WHERE id_produit = ? AND id_utilisateur = ?`,
-                [nouvelle_qte, lc.id_produit, id_utilisateur]
-            );
+            for (const ligne of lignes) {
+                const {
+                    id_produit,
+                    id_ligne_achat = null,
+                    id_unite_vente = null,
+                    nom_unite_vente = 'Unité',
+                    quantite_base = 1,
+                    quantite_commandee = 0,
+                    quantite_recue,
+                    quantite_totale_base = null,
+                    prix_achat_unite_vente = null,
+                    prix_achat_base = null,
+                    etat_marchandise = 'bon',
+                    num_lot = null,
+                    date_peremption = null,
+                    notes_ligne = null
+                } = ligne;
 
-            const nouveauStatut = nouvelle_qte <= 0 ? 'rupture' : 'disponible';
-            await connection.execute(
-                `UPDATE produits SET statut = ?
-                 WHERE id_produit = ? AND id_utilisateur = ?`,
-                [nouveauStatut, lc.id_produit, id_utilisateur]
-            );
+                // --- Vérifier le produit ---
+                const [produitRows] = await connection.execute(
+                    `SELECT id_produit, nom, prix_achat, prix_vente, quantite_stock
+                     FROM produits
+                     WHERE id_produit = ? AND id_utilisateur = ?`,
+                    [id_produit, id_utilisateur]
+                );
 
-            // ============================================================
-            // ✅ MISE À JOUR DES PRIX D'ACHAT UNIQUEMENT (jamais prix_vente)
-            // ✅ AUCUN calcul automatique — on stocke ce qui est saisi
-            // ============================================================
-            if (lc.prix_achat_unite_vente && lc.prix_achat_unite_vente > 0) {
-
-                // 1. unites_vente.prix_achat
-                if (lc.id_unite_vente) {
-                    await connection.execute(
-                        `UPDATE unites_vente SET prix_achat = ?
-                         WHERE id_unite_vente = ?`,
-                        [lc.prix_achat_unite_vente, lc.id_unite_vente]
-                    );
+                if (produitRows.length === 0) {
+                    throw new Error(`Produit ID ${id_produit} non trouvé`);
                 }
 
-                // 2. produits.prix_achat — UNIQUEMENT si SAISI par l'utilisateur
-                //    (jamais calculé automatiquement)
-                if (lc.prix_achat_base && lc.prix_achat_base > 0) {
-                    await connection.execute(
-                        `UPDATE produits SET prix_achat = ?
-                         WHERE id_produit = ? AND id_utilisateur = ?`,
-                        [lc.prix_achat_base, lc.id_produit, id_utilisateur]
-                    );
+                if (!quantite_recue || parseFloat(quantite_recue) <= 0) {
+                    throw new Error(`La quantité reçue pour ${produitRows[0].nom} doit être positive`);
                 }
 
-                // 3. ligne_commande_achat.prix_achat (si NULL)
-                if (lc.id_ligne_achat) {
-                    await connection.execute(
-                        `UPDATE ligne_commande_achat SET prix_achat = ?
-                         WHERE id_ligne_achat = ?
-                           AND (prix_achat IS NULL OR prix_achat = 0)`,
-                        [lc.prix_achat_unite_vente, lc.id_ligne_achat]
+                // --- Déterminer quantite_base ---
+                let qteBase = parseFloat(quantite_base) || 1;
+                if (id_unite_vente) {
+                    const [uvRows] = await connection.execute(
+                        `SELECT quantite_base FROM unites_vente
+                         WHERE id_unite_vente = ? AND id_produit = ?`,
+                        [id_unite_vente, id_produit]
                     );
+                    if (uvRows.length > 0) {
+                        qteBase = parseFloat(uvRows[0].quantite_base) || 1;
+                    }
                 }
+
+                // --- Quantité totale en unité de base ---
+                const qteTotaleBase = quantite_totale_base !== null
+                    ? parseFloat(quantite_totale_base)
+                    : parseFloat(quantite_recue) * qteBase;
+
+                // ============================================================
+                // ✅ SURPLUS AUTORISÉ : on log juste un avertissement
+                // ============================================================
+                if (quantite_commandee && parseFloat(quantite_commandee) > 0) {
+                    const qteCommandeeBase = parseFloat(quantite_commandee) * qteBase;
+                    if (qteTotaleBase > qteCommandeeBase) {
+                        console.log(
+                            `⚠️ Surplus détecté pour "${produitRows[0].nom}" : ` +
+                            `commandé ${qteCommandeeBase} unités de base, ` +
+                            `reçu ${qteTotaleBase} unités de base`
+                        );
+                        // ✅ On continue, pas d'erreur
+                    }
+                }
+
+                // --- Prix d'achat unité de vente ---
+                let prixAchatUV = null;
+                if (
+                    prix_achat_unite_vente !== null &&
+                    prix_achat_unite_vente !== undefined &&
+                    prix_achat_unite_vente !== ''
+                ) {
+                    const parsed = parseFloat(prix_achat_unite_vente);
+                    if (!isNaN(parsed) && parsed > 0) {
+                        prixAchatUV = parsed;
+                    }
+                }
+
+                // --- Prix d'achat unité de base ---
+                let prixAchatBase = null;
+                if (
+                    prix_achat_base !== null &&
+                    prix_achat_base !== undefined &&
+                    prix_achat_base !== ''
+                ) {
+                    const parsed = parseFloat(prix_achat_base);
+                    if (!isNaN(parsed) && parsed > 0) {
+                        prixAchatBase = parsed;
+                    }
+                }
+
+                lignesCalculees.push({
+                    id_produit,
+                    id_ligne_achat,
+                    id_unite_vente,
+                    nom_unite_vente,
+                    quantite_base: qteBase,
+                    quantite_commandee: parseFloat(quantite_commandee) || 0,
+                    quantite_recue: parseFloat(quantite_recue),
+                    quantite_totale_base: qteTotaleBase,
+                    prix_achat_unite_vente: prixAchatUV,
+                    prix_achat_base: prixAchatBase,
+                    etat_marchandise,
+                    num_lot,
+                    date_peremption,
+                    notes_ligne
+                });
             }
 
-            // --- Entrée stock (traçabilité) ---
-            const ref_entree = `ENT-${Date.now()}-${lc.id_produit}-${Math.random().toString(36).slice(2, 7)}`;
-            await connection.execute(
-                `INSERT INTO entrees_stock (
-                    id_utilisateur, reference, id_produit, id_reception,
-                    id_unite_vente, nom_unite_vente, quantite_base,
-                    quantite, quantite_totale_base,
-                    num_lot, date_peremption, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            // ============================================================
+            // 4. GÉNÉRATION DU NUMÉRO
+            // ============================================================
+            const numero_reception = await this.genererNumero(id_utilisateur);
+
+            // ============================================================
+            // 5. CRÉATION DE L'EN-TÊTE
+            // ============================================================
+            const [result] = await connection.execute(
+                `INSERT INTO receptions (
+                    id_utilisateur, numero_reception, date_reception,
+                    id_commande_achat, statut, montant_total, notes
+                ) VALUES (?, ?, ?, ?, 'en_attente', 0.00, ?)`,
                 [
                     id_utilisateur,
-                    ref_entree,
-                    lc.id_produit,
-                    id_reception,
-                    lc.id_unite_vente,
-                    lc.nom_unite_vente,
-                    lc.quantite_base,
-                    lc.quantite_recue,
-                    lc.quantite_totale_base,
-                    lc.num_lot,
-                    lc.date_peremption,
-                    lc.notes_ligne || 'Entrée par réception'
+                    numero_reception,
+                    date_reception,
+                    id_commande_achat,
+                    notes
                 ]
             );
 
-            // --- Mouvement de stock (traçabilité UNIQUEMENT) ---
-            // ⚠️ MouvementStock ne doit PAS modifier le stock
-            await MouvementStock.enregistrer({
-                id_produit: lc.id_produit,
-                type_mouvement: 'entree',
-                quantite: lc.quantite_totale_base,
-                id_reference: id_reception,
-                type_reference: 'reception',
-                notes: `Réception ${numero_reception} - ${lc.quantite_recue} ${lc.nom_unite_vente}`
-            }, connection, id_utilisateur);
-        }
+            const id_reception = result.insertId;
 
-        // ============================================================
-        // 7. MISE À JOUR EN-TÊTE RÉCEPTION
-        // ============================================================
-        await connection.execute(
-            `UPDATE receptions
-             SET statut = ?, montant_total = ?
-             WHERE id_reception = ? AND id_utilisateur = ?`,
-            [statut_reception, montant_total, id_reception, id_utilisateur]
-        );
+            // ============================================================
+            // 6. TRAITEMENT DES LIGNES
+            // ============================================================
+            let montant_total = 0;
+            let statut_reception = 'complete';
 
-        // ============================================================
-        // 8. MISE À JOUR COMMANDE D'ACHAT
-        // ============================================================
-        if (id_commande_achat) {
-            const [commandeLignes] = await connection.execute(
-                `SELECT id_ligne_achat, id_produit, quantite, quantite_totale_base
-                 FROM ligne_commande_achat
-                 WHERE id_commande_achat = ?`,
-                [id_commande_achat]
-            );
+            for (const lc of lignesCalculees) {
+                const ecart = lc.quantite_commandee - lc.quantite_recue;
 
-            let toutesRecues = true;
-            for (const cl of commandeLignes) {
-                const [recu] = await connection.execute(
-                    `SELECT COALESCE(SUM(quantite_totale_base), 0) AS total_recu
-                     FROM reception_lignes
-                     WHERE id_ligne_achat = ?`,
-                    [cl.id_ligne_achat]
-                );
-                const totalRecu = parseFloat(recu[0].total_recu) || 0;
-                const qteCommandeeBase = parseFloat(cl.quantite_totale_base)
-                    || parseFloat(cl.quantite) || 0;
-
-                if (totalRecu < qteCommandeeBase) {
-                    toutesRecues = false;
-                    break;
+                // ✅ Si écart > 0 (manquant) → réception partielle
+                if (ecart > 0 && statut_reception === 'complete') {
+                    statut_reception = 'partielle';
                 }
+                // ✅ Si écart < 0 (surplus) → on log mais reste 'complete' pour cette ligne
+                // (le surplus est accepté)
+
+                // Montant ligne = quantite_recue × prix_achat_unite_vente
+                const montantLigne = lc.prix_achat_unite_vente
+                    ? lc.quantite_recue * lc.prix_achat_unite_vente
+                    : null;
+                if (montantLigne !== null) {
+                    montant_total += montantLigne;
+                }
+
+                // --- Insérer la ligne de réception ---
+                await connection.execute(
+                    `INSERT INTO reception_lignes (
+                        id_reception, id_produit, id_ligne_achat,
+                        id_unite_vente, nom_unite_vente, quantite_base, quantite_totale_base,
+                        quantite_commandee, quantite_recue, ecart,
+                        prix_achat_unite_vente, prix_achat_base, montant_total,
+                        etat_marchandise, num_lot, date_peremption, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        id_reception,
+                        lc.id_produit,
+                        lc.id_ligne_achat,
+                        lc.id_unite_vente,
+                        lc.nom_unite_vente,
+                        lc.quantite_base,
+                        lc.quantite_totale_base,
+                        lc.quantite_commandee,
+                        lc.quantite_recue,
+                        ecart,
+                        lc.prix_achat_unite_vente,
+                        lc.prix_achat_base,
+                        montantLigne,
+                        lc.etat_marchandise,
+                        lc.num_lot,
+                        lc.date_peremption,
+                        lc.notes_ligne
+                    ]
+                );
+
+                // ============================================================
+                // ✅ SEUL ENDROIT QUI MODIFIE LE STOCK
+                // ============================================================
+                const [stockRows] = await connection.execute(
+                    `SELECT quantite_stock FROM produits
+                     WHERE id_produit = ? AND id_utilisateur = ?`,
+                    [lc.id_produit, id_utilisateur]
+                );
+                const ancienne_qte = parseFloat(stockRows[0]?.quantite_stock) || 0;
+                const nouvelle_qte = ancienne_qte + lc.quantite_totale_base;
+
+                await connection.execute(
+                    `UPDATE produits SET quantite_stock = ?
+                     WHERE id_produit = ? AND id_utilisateur = ?`,
+                    [nouvelle_qte, lc.id_produit, id_utilisateur]
+                );
+
+                const nouveauStatut = nouvelle_qte <= 0 ? 'rupture' : 'disponible';
+                await connection.execute(
+                    `UPDATE produits SET statut = ?
+                     WHERE id_produit = ? AND id_utilisateur = ?`,
+                    [nouveauStatut, lc.id_produit, id_utilisateur]
+                );
+
+                // ============================================================
+                // MISE À JOUR DES PRIX D'ACHAT UNIQUEMENT
+                // ============================================================
+                if (lc.prix_achat_unite_vente && lc.prix_achat_unite_vente > 0) {
+                    if (lc.id_unite_vente) {
+                        await connection.execute(
+                            `UPDATE unites_vente SET prix_achat = ?
+                             WHERE id_unite_vente = ?`,
+                            [lc.prix_achat_unite_vente, lc.id_unite_vente]
+                        );
+                    }
+
+                    if (lc.prix_achat_base && lc.prix_achat_base > 0) {
+                        await connection.execute(
+                            `UPDATE produits SET prix_achat = ?
+                             WHERE id_produit = ? AND id_utilisateur = ?`,
+                            [lc.prix_achat_base, lc.id_produit, id_utilisateur]
+                        );
+                    }
+
+                    if (lc.id_ligne_achat) {
+                        await connection.execute(
+                            `UPDATE ligne_commande_achat SET prix_achat = ?
+                             WHERE id_ligne_achat = ?
+                               AND (prix_achat IS NULL OR prix_achat = 0)`,
+                            [lc.prix_achat_unite_vente, lc.id_ligne_achat]
+                        );
+                    }
+                }
+
+                // --- Entrée stock (traçabilité) ---
+                const ref_entree = `ENT-${Date.now()}-${lc.id_produit}-${Math.random().toString(36).slice(2, 7)}`;
+                await connection.execute(
+                    `INSERT INTO entrees_stock (
+                        id_utilisateur, reference, id_produit, id_reception,
+                        id_unite_vente, nom_unite_vente, quantite_base,
+                        quantite, quantite_totale_base,
+                        num_lot, date_peremption, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        id_utilisateur,
+                        ref_entree,
+                        lc.id_produit,
+                        id_reception,
+                        lc.id_unite_vente,
+                        lc.nom_unite_vente,
+                        lc.quantite_base,
+                        lc.quantite_recue,
+                        lc.quantite_totale_base,
+                        lc.num_lot,
+                        lc.date_peremption,
+                        lc.notes_ligne || 'Entrée par réception'
+                    ]
+                );
+
+                // --- Mouvement de stock (traçabilité UNIQUEMENT) ---
+                await MouvementStock.enregistrer({
+                    id_produit: lc.id_produit,
+                    type_mouvement: 'entree',
+                    quantite: lc.quantite_totale_base,
+                    id_reference: id_reception,
+                    type_reference: 'reception',
+                    notes: `Réception ${numero_reception} - ${lc.quantite_recue} ${lc.nom_unite_vente}`
+                }, connection, id_utilisateur);
             }
 
-            const nouveauStatut = toutesRecues ? 'recue' : 'partiellement_recue';
-
-            const [tot] = await connection.execute(
-                `SELECT COALESCE(SUM(montant_total), 0) AS total
-                 FROM ligne_commande_achat
-                 WHERE id_commande_achat = ?`,
-                [id_commande_achat]
-            );
-            const nouveauMontant = parseFloat(tot[0].total) || 0;
-
+            // ============================================================
+            // 7. MISE À JOUR EN-TÊTE RÉCEPTION
+            // ============================================================
             await connection.execute(
-                `UPDATE commandes_achat SET statut = ?, montant_total = ?
-                 WHERE id_commande_achat = ? AND id_utilisateur = ?`,
-                [nouveauStatut, nouveauMontant, id_commande_achat, id_utilisateur]
+                `UPDATE receptions
+                 SET statut = ?, montant_total = ?
+                 WHERE id_reception = ? AND id_utilisateur = ?`,
+                [statut_reception, montant_total, id_reception, id_utilisateur]
             );
+
+            // ============================================================
+            // 8. MISE À JOUR COMMANDE D'ACHAT
+            // ============================================================
+            if (id_commande_achat) {
+                const [commandeLignes] = await connection.execute(
+                    `SELECT id_ligne_achat, id_produit, quantite, quantite_totale_base
+                     FROM ligne_commande_achat
+                     WHERE id_commande_achat = ?`,
+                    [id_commande_achat]
+                );
+
+                let toutesRecues = true;
+                for (const cl of commandeLignes) {
+                    const [recu] = await connection.execute(
+                        `SELECT COALESCE(SUM(quantite_totale_base), 0) AS total_recu
+                         FROM reception_lignes
+                         WHERE id_ligne_achat = ?`,
+                        [cl.id_ligne_achat]
+                    );
+                    const totalRecu = parseFloat(recu[0].total_recu) || 0;
+                    const qteCommandeeBase = parseFloat(cl.quantite_totale_base)
+                        || parseFloat(cl.quantite) || 0;
+
+                    if (totalRecu < qteCommandeeBase) {
+                        toutesRecues = false;
+                        break;
+                    }
+                }
+
+                const nouveauStatut = toutesRecues ? 'recue' : 'partiellement_recue';
+
+                const [tot] = await connection.execute(
+                    `SELECT COALESCE(SUM(montant_total), 0) AS total
+                     FROM ligne_commande_achat
+                     WHERE id_commande_achat = ?`,
+                    [id_commande_achat]
+                );
+                const nouveauMontant = parseFloat(tot[0].total) || 0;
+
+                await connection.execute(
+                    `UPDATE commandes_achat SET statut = ?, montant_total = ?
+                     WHERE id_commande_achat = ? AND id_utilisateur = ?`,
+                    [nouveauStatut, nouveauMontant, id_commande_achat, id_utilisateur]
+                );
+            }
+
+            await connection.commit();
+            return await this.findById(id_reception, id_utilisateur);
+
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
         }
-
-        await connection.commit();
-        return await this.findById(id_reception, id_utilisateur);
-
-    } catch (error) {
-        await connection.rollback();
-        throw error;
-    } finally {
-        connection.release();
     }
-}
 
     /**
      * ============================================================
@@ -534,7 +529,7 @@ static async create(data) {
 
     /**
      * ============================================================
-     * Récupérer toutes les réceptions (par workspace)
+     * Récupérer toutes les réceptions
      * ============================================================
      */
     static async findAll(filters = {}, id_utilisateur) {
@@ -722,7 +717,7 @@ static async create(data) {
 
     /**
      * ============================================================
-     * Statistiques des réceptions (par workspace)
+     * Statistiques des réceptions
      * ============================================================
      */
     static async getStats(id_utilisateur) {

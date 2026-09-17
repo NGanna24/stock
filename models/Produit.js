@@ -108,6 +108,8 @@ class Produit {
         };
     }
 
+
+    
     /**
      * ============================================================
      * ✅ NOUVEAU : Récupérer plusieurs produits avec leurs unités
@@ -157,6 +159,86 @@ class Produit {
             unites_vente: unitesParProduit[p.id_produit] || []
         }));
     }
+
+    // models/Produit.js
+
+/**
+ * ============================================================
+ * ✅ Vérifie si un produit identique existe déjà (anti-doublon)
+ *
+ * Un produit est considéré comme doublon si :
+ *   - même nom (insensible à la casse et aux espaces)
+ *   - même modèle (ou les deux NULL)
+ *   - même marque (ou les deux NULL)
+ *   - même workspace (id_utilisateur)
+ *
+ * ⚠️ Les unités de vente et les prix n'entrent PAS en jeu.
+ *
+ * @param {Object} params
+ * @param {string} params.nom
+ * @param {number|null} params.idModele
+ * @param {number|null} params.idMarque   ← ✅ NOUVEAU
+ * @param {number} params.id_utilisateur
+ * @param {number|null} [params.excludeId] - ID à exclure (pour l'update)
+ * @returns {Promise<Object|null>} Le produit en doublon ou null
+ * ============================================================
+ */
+static async findDuplicate({
+    nom,
+    idModele = null,
+    idMarque = null,
+    id_utilisateur,
+    excludeId = null
+}) {
+    if (!id_utilisateur) {
+        throw new Error('id_utilisateur requis pour findDuplicate');
+    }
+
+    const conditions = [
+        'p.id_utilisateur = ?',
+        'LOWER(TRIM(p.nom)) = LOWER(TRIM(?))'
+    ];
+    const params = [id_utilisateur, nom];
+
+    // Gestion des NULL pour id_modele
+    if (idModele) {
+        conditions.push('p.id_modele = ?');
+        params.push(idModele);
+    } else {
+        conditions.push('p.id_modele IS NULL');
+    }
+
+    // ✅ Gestion des NULL pour id_marque
+    if (idMarque) {
+        conditions.push('p.id_marque = ?');
+        params.push(idMarque);
+    } else {
+        conditions.push('p.id_marque IS NULL');
+    }
+
+    // Exclure le produit en cours d'édition
+    if (excludeId) {
+        conditions.push('p.id_produit != ?');
+        params.push(excludeId);
+    }
+
+    const [rows] = await pool.execute(
+        `SELECT p.id_produit,
+                p.nom,
+                p.id_modele,
+                p.id_marque,
+                md.nom AS modele_nom,
+                m.nom AS marque_nom
+         FROM produits p
+         LEFT JOIN modeles md ON p.id_modele = md.id_modele
+         LEFT JOIN marques m ON p.id_marque = m.id_marque
+         WHERE ${conditions.join(' AND ')}
+         LIMIT 1`,
+        params
+    );
+
+    return rows[0] || null;
+}
 
     /**
      * ============================================================

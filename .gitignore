@@ -98,3 +98,17 @@ temp/
 *.pid
 *.seed
 *.pid.lock
+
+
+# ============================================================
+# UPLOADS — FICHIERS UPLOADÉS (logos magasins, etc.)
+# ============================================================
+# Ne pas suivre les fichiers uploadés par les utilisateurs
+uploads/magasins/
+uploads/magasins/*
+!uploads/magasins/.gitkeep
+
+# ⚠️ Si tu as d'autres dossiers d'uploads à ignorer, ajoute-les :
+# uploads/produits/
+# uploads/clients/
+# uploads/factures/

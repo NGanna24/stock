@@ -7,13 +7,10 @@ import Fournisseur from '../models/Fournisseur.js';
 class ReceptionController {
     /**
      * ============================================================
-     * ✅ Créer une nouvelle réception (avec unités de vente)
+     * ✅ Créer une nouvelle réception
+     *    - ACCEPTE les réceptions partielles
+     *    - ACCEPTE les surplus
      * ============================================================
-     * Règles :
-     *  - quantite_recue est en UNITÉ DE VENTE (ex: 10 cartons)
-     *  - quantite_base est le multiplicateur (ex: 12)
-     *  - quantite_totale_base = quantite_recue × quantite_base (ex: 120 bidons)
-     *  - La comparaison commandée/reçue se fait en UNITÉ DE BASE
      */
     static async create(req, res) {
         try {
@@ -38,7 +35,7 @@ class ReceptionController {
                 });
             }
 
-            // ========== 2. VÉRIFIER LA COMMANDE DANS LE WORKSPACE ==========
+            // ========== 2. VÉRIFIER LA COMMANDE ==========
             if (id_commande_achat) {
                 const commande = await CommandeAchat.findById(id_commande_achat, req.workspaceId);
                 if (!commande) {
@@ -62,7 +59,7 @@ class ReceptionController {
                 }
             }
 
-            // ========== 3. VÉRIFIER LES PRODUITS + CALCULER QUANTITÉS DE BASE ==========
+            // ========== 3. VÉRIFIER LES PRODUITS ==========
             for (const ligne of lignes) {
                 const {
                     id_produit,
@@ -73,7 +70,6 @@ class ReceptionController {
                     quantite_totale_base = null
                 } = ligne;
 
-                // --- Vérifier le produit (workspace) ---
                 const produit = await Produit.findById(id_produit, req.workspaceId);
                 if (!produit) {
                     return res.status(404).json({
@@ -82,7 +78,6 @@ class ReceptionController {
                     });
                 }
 
-                // --- Vérifier la quantité reçue ---
                 if (!quantite_recue || parseFloat(quantite_recue) <= 0) {
                     return res.status(400).json({
                         success: false,
@@ -90,26 +85,22 @@ class ReceptionController {
                     });
                 }
 
-                // --- Calculer quantite_base ---
+                // ============================================================
+                // ✅ SURPLUS AUTORISÉ : on log juste un avertissement
+                // ============================================================
                 let qteBase = parseFloat(quantite_base) || 1;
-
-                // --- Calculer la quantité en unité de base ---
                 const qteTotaleBase = quantite_totale_base !== null
                     ? parseFloat(quantite_totale_base)
                     : parseFloat(quantite_recue) * qteBase;
 
-                // --- Vérifier que la quantité reçue ne dépasse pas la commandée ---
-                // ⚠️ La comparaison doit se faire en UNITÉ DE BASE
                 if (quantite_commandee && parseFloat(quantite_commandee) > 0) {
                     const qteCommandeeBase = parseFloat(quantite_commandee) * qteBase;
                     if (qteTotaleBase > qteCommandeeBase) {
-                        return res.status(400).json({
-                            success: false,
-                            message:
-                                `La quantité reçue pour "${produit.nom}" dépasse la quantité commandée. ` +
-                                `Commandé: ${quantite_commandee} (${qteCommandeeBase} unités de base), ` +
-                                `Reçu: ${quantite_recue} (${qteTotaleBase} unités de base)`
-                        });
+                        console.log(
+                            `⚠️ Surplus détecté pour "${produit.nom}" : ` +
+                            `commandé ${qteCommandeeBase}, reçu ${qteTotaleBase}`
+                        );
+                        // ✅ On continue, pas d'erreur
                     }
                 }
             }
@@ -120,7 +111,7 @@ class ReceptionController {
                 date_reception,
                 notes,
                 id_utilisateur: req.workspaceId,
-                lignes  // ✅ On transmet les lignes telles quelles (avec id_unite_vente, quantite_base, etc.)
+                lignes
             });
 
             return res.status(201).json({
@@ -132,12 +123,10 @@ class ReceptionController {
         } catch (error) {
             console.error('❌ Create reception error:', error);
 
-            // ✅ Distinguer les erreurs métier (400) des erreurs serveur (500)
             const isBusinessError = error.message && (
                 error.message.includes('non trouvé') ||
                 error.message.includes('obligatoire') ||
                 error.message.includes('positive') ||
-                error.message.includes('dépasse') ||
                 error.message.includes('déjà été') ||
                 error.message.includes('annulée') ||
                 error.message.includes('existe déjà') ||
@@ -154,7 +143,7 @@ class ReceptionController {
 
     /**
      * ============================================================
-     * Récupérer toutes les réceptions du workspace
+     * Récupérer toutes les réceptions
      * ============================================================
      */
     static async getAll(req, res) {
@@ -211,7 +200,6 @@ class ReceptionController {
     static async getById(req, res) {
         try {
             const { id } = req.params;
-
             const reception = await Reception.findById(id, req.workspaceId);
 
             if (!reception) {
@@ -277,7 +265,6 @@ class ReceptionController {
     static async getByCommande(req, res) {
         try {
             const { id_commande } = req.params;
-
             const receptions = await Reception.findByCommande(id_commande, req.workspaceId);
 
             return res.status(200).json({
@@ -297,7 +284,7 @@ class ReceptionController {
 
     /**
      * ============================================================
-     * Statistiques des réceptions (workspace)
+     * Statistiques des réceptions
      * ============================================================
      */
     static async getStats(req, res) {
@@ -408,7 +395,7 @@ class ReceptionController {
 
     /**
      * ============================================================
-     * Exporter les réceptions du workspace
+     * Exporter les réceptions
      * ============================================================
      */
     static async export(req, res) {

@@ -6,7 +6,7 @@ class AlerteController {
      * ============================================================
      * LISTE COMPLÈTE DES ALERTES
      * ============================================================
-     */
+     */ 
     static async getAllAlertes(req, res) {
         try {
             const [

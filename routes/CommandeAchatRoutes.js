@@ -10,7 +10,7 @@ router.get(
     '/stats',
     authenticateToken,
     CommandeAchatController.getStats
-);
+); 
 
 // ==================== ROUTES D'EXPORT ====================
 router.get(

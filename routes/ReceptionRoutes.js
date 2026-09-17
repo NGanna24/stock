@@ -6,7 +6,7 @@ import { authenticateToken } from '../middleware/middleware.js';
 const router = express.Router();
 
 // ==================== ROUTES STATISTIQUES ====================
-router.get('/stats', authenticateToken, ReceptionController.getStats);
+router.get('/stats', authenticateToken, ReceptionController.getStats); 
 
 // ==================== ROUTES D'EXPORT ====================
 router.get('/export', authenticateToken, ReceptionController.export);
