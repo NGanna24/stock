@@ -363,7 +363,7 @@ static async createProduit(req, res) {
             return res.status(409).json({
                 success: false,
                 code: 'DUPLICATE_PRODUIT',
-                message: `Un produit nommé "${nomNormalise}"${detailsStr} existe déjà (ID #${doublon.id_produit}).`,
+                message: `Un produit nommé "${nomNormalise}"${detailsStr} existe déjà.`,
                 existing: {
                     id: doublon.id_produit,
                     nom: doublon.nom,

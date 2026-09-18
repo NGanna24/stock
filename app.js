@@ -32,6 +32,7 @@ import magasinRoutes from './routes/MagasinRoutes.js';
 import employeRoutes from './routes/EmployeRoutes.js';
 // En haut, avec les autres imports
 import assistantAchatRoutes from './routes/AssistantAchatRoutes.js';
+import searchRoutes from './routes/SearchRoutes.js';
 
 // Dans la section ROUTES API PRINCIPALES
 import path from 'path';
@@ -117,6 +118,7 @@ app.use('/api/unites-vente', uniteVenteRoutes);
 app.use('/api/magasin', magasinRoutes);
 app.use('/api/employes', employeRoutes);
 app.use('/api/assistant-achat', assistantAchatRoutes);
+app.use('/api/search', searchRoutes);
 
 // ==================== DÉMARRAGE DU SERVEUR ====================
 const startServer = async () => {
