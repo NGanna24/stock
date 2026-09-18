@@ -30,7 +30,10 @@ import recetteRoutes from './routes/RecetteRoutes.js';
 import uniteVenteRoutes from './routes/UniteVenteRoutes.js';
 import magasinRoutes from './routes/MagasinRoutes.js';
 import employeRoutes from './routes/EmployeRoutes.js';
+// En haut, avec les autres imports
+import assistantAchatRoutes from './routes/AssistantAchatRoutes.js';
 
+// Dans la section ROUTES API PRINCIPALES
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -113,6 +116,7 @@ app.use('/api/recettes', recetteRoutes);
 app.use('/api/unites-vente', uniteVenteRoutes);
 app.use('/api/magasin', magasinRoutes);
 app.use('/api/employes', employeRoutes);
+app.use('/api/assistant-achat', assistantAchatRoutes);
 
 // ==================== DÉMARRAGE DU SERVEUR ====================
 const startServer = async () => {

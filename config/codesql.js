@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS employes (
     id_magasin INT NOT NULL,              -- magasin où il travaille
     id_role INT NOT NULL,                 -- caissier, magasinier...
     fullname VARCHAR(100) NOT NULL,
-    slug VARCHAR(100) NOT NULL,
+    slug VARCHAR(100) NOT NULL, 
     telephone VARCHAR(20) NOT NULL,
     password VARCHAR(255) NOT NULL,
     actif BOOLEAN DEFAULT TRUE,

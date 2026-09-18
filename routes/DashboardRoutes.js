@@ -5,15 +5,12 @@ import { authenticateToken } from '../middleware/middleware.js';
 
 const router = express.Router();
 
-// Toutes les routes nécessitent l'authentification
 router.use(authenticateToken);
 
-// Route principale : toutes les stats en un appel
 router.get('/stats', DashboardController.getStats);
-
-// Routes détaillées (pour recharger une partie spécifique)
 router.get('/kpis', DashboardController.getKPIs);
 router.get('/ventes-chart', DashboardController.getVentesChart);
+router.get('/benefices-jour', DashboardController.getBeneficesParJour);  // ✅ NOUVEAU
 router.get('/top-produits', DashboardController.getTopProduits);
 router.get('/alertes', DashboardController.getAlertes);
 router.get('/derniers-mouvements', DashboardController.getDerniersMouvements);
