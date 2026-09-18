@@ -21,6 +21,7 @@ class AssistantAchat {
      * ⚠️ CORRECTION MAJEURE : tient compte du STOCK EN COMMANDE
      *    → stock_prévisionnel = quantite_stock + en_commande
      *    → évite de recommander ce qui est déjà en cours
+     * ⚠️ GARANTIE : quantite_proposee_uv >= 1 (jamais 0)
      */
     static async getProposition(id_utilisateur, options = {}) {
         if (!id_utilisateur) {
@@ -29,9 +30,6 @@ class AssistantAchat {
 
         // ============================================================
         // 🔑 ÉTAPE 1 : Récupérer les QUANTITÉS EN COMMANDE
-        // ============================================================
-        // Somme des quantités des lignes de bons OUVERTs
-        // statuts : en_attente, envoyee, partiellement_recue
         // ============================================================
         const [enCommandeRaw] = await pool.execute(
             `SELECT
@@ -53,7 +51,6 @@ class AssistantAchat {
             [id_utilisateur]
         );
 
-        // Map : id_produit → quantité en commande (unité de base)
         const enCommandeMap = new Map();
         enCommandeRaw.forEach(r => {
             enCommandeMap.set(
@@ -63,12 +60,7 @@ class AssistantAchat {
         });
 
         // ============================================================
-        // 🔑 ÉTAPE 2 : Récupérer TOUS les produits (sans filtre stock)
-        // ============================================================
-        // ⚠️ On filtre par id_utilisateur SEULEMENT
-        // ⚠️ PAS de p.actif (colonne inexistante)
-        // ⚠️ On ne filtre PAS sur quantite_stock ici car on veut
-        //    comparer avec le stock PRÉVISIONNEL
+        // 🔑 ÉTAPE 2 : Récupérer TOUS les produits
         // ============================================================
         const [produits] = await pool.execute(
             `SELECT
@@ -89,7 +81,6 @@ class AssistantAchat {
                 f.telephone AS fournisseur_telephone,
                 f.email AS fournisseur_email,
                 f.ville AS fournisseur_ville,
-                -- Unité de vente principale (si définie)
                 uv.id_unite_vente AS uv_id,
                 uv.nom AS uv_nom,
                 uv.quantite_base AS uv_quantite_base,
@@ -109,10 +100,6 @@ class AssistantAchat {
 
         // ============================================================
         // 🔑 ÉTAPE 3 : Filtrer avec le STOCK PRÉVISIONNEL
-        // ============================================================
-        // Stock prévisionnel = quantite_stock + en_commande
-        // On ne propose QUE les produits dont le stock prévisionnel
-        // est ≤ 0 OU ≤ seuil minimum
         // ============================================================
         const produitsAFiltre = produits.filter(p => {
             const stock = parseFloat(p.quantite_stock) || 0;
@@ -137,7 +124,7 @@ class AssistantAchat {
         }
 
         // ============================================================
-        // 🔑 ÉTAPE 4 : Ventes 30j pour ces produits
+        // 🔑 ÉTAPE 4 : Ventes 30j
         // ============================================================
         const idsProduits = produitsAFiltre.map(p => p.id_produit);
         const placeholders = idsProduits.map(() => '?').join(',');
@@ -179,13 +166,12 @@ class AssistantAchat {
             const max = parseFloat(p.quantite_maximale) || 0;
             const enCommande = enCommandeMap.get(p.id_produit) || 0;
 
-            // ✅ Stock prévisionnel = stock + en commande
             const stockPrevisionnel = stock + enCommande;
 
             const vente = ventesMap.get(p.id_produit) || { total_vendu_base: 0, nb_commandes: 0 };
             const vitesse = vente.total_vendu_base / 30;
 
-            // --- 3 besoins (basés sur stock prévisionnel) ---
+            // --- 3 besoins ---
             const besoinCouverture = Math.max(0, (vitesse * joursCouverture) - stockPrevisionnel);
             const besoinMax = max > 0 ? Math.max(0, max - stockPrevisionnel) : 0;
             const besoinMin = min > 0 ? Math.max(0, (min * 2) - stockPrevisionnel) : 0;
@@ -195,7 +181,8 @@ class AssistantAchat {
                 besoinBase = Math.max(0, min - stockPrevisionnel);
             }
 
-            const besoinArrondi = Math.ceil(besoinBase);
+            // ✅ FIX 1a : garantir au moins 1 unité de base
+            const besoinArrondi = Math.max(1, Math.ceil(besoinBase));
 
             // --- Unité de vente proposée ---
             const uv = p.uv_id
@@ -208,7 +195,9 @@ class AssistantAchat {
                 : null;
 
             const qteBaseParUV = uv?.quantite_base || 1;
-            const qteUV = Math.ceil(besoinArrondi / qteBaseParUV);
+
+            // ✅ FIX 1b : garantir au moins 1 unité de vente
+            const qteUV = Math.max(1, Math.ceil(besoinArrondi / qteBaseParUV));
             const qteTotaleBase = qteUV * qteBaseParUV;
 
             const prixUnitaire = uv?.prix_achat || p.produit_prix_achat || null;
@@ -217,29 +206,22 @@ class AssistantAchat {
             const typeAlerte = stockPrevisionnel <= 0 ? 'rupture' : 'stock_bas';
 
             return {
-                // Produit
                 id_produit: p.id_produit,
                 produit_nom: p.produit_nom,
                 marque_nom: p.marque_nom,
 
-                // Stock
                 quantite_stock: stock,
                 quantite_minimale: min,
                 quantite_maximale: max,
-
-                // ✅ NOUVEAU : info stock prévisionnel
                 quantite_en_commande: enCommande,
                 stock_previsionnel: stockPrevisionnel,
 
-                // Ventes
                 ventes_30j_base: vente.total_vendu_base,
                 nb_commandes_30j: vente.nb_commandes,
                 vitesse_jour: parseFloat(vitesse.toFixed(2)),
 
-                // Besoin
                 besoin_base: besoinArrondi,
 
-                // Unité de vente proposée
                 unite_proposee: uv
                     ? {
                         id_unite_vente: uv.id_unite_vente,
@@ -250,16 +232,13 @@ class AssistantAchat {
                 quantite_proposee_uv: qteUV,
                 quantite_proposee_base: qteTotaleBase,
 
-                // Prix
                 prix_unitaire: prixUnitaire,
                 prix_total: prixTotal,
                 prix_connu: prixUnitaire !== null,
 
-                // Unité de base
                 unite_base_nom: p.unite_nom || 'Unité',
                 unite_base_symbole: p.unite_symbole || '',
 
-                // Meta
                 type_alerte: typeAlerte,
             };
         });
@@ -319,11 +298,6 @@ class AssistantAchat {
      * ============================================================
      * ✅ CRÉER LES BONS DE COMMANDE
      * ============================================================
-     * Règles métier :
-     *  1. Un seul bon ouvert par fournisseur
-     *  2. Si un bon ouvert existe → on AJOUTE les nouvelles lignes
-     *  3. Si un produit est déjà dans un bon ouvert → ignoré
-     *  4. Sinon → création d'un nouveau bon
      */
     static async creerBons(id_utilisateur, payload) {
         if (!id_utilisateur) {
@@ -336,7 +310,7 @@ class AssistantAchat {
             throw new Error('Aucun groupe de commande à créer');
         }
 
-        // ✅ Fusionner les groupes par fournisseur (au cas où)
+        // ✅ Fusionner les groupes par fournisseur
         const groupesFusionnes = new Map();
         groupes.forEach(g => {
             if (!g.id_fournisseur) return;
@@ -362,22 +336,28 @@ class AssistantAchat {
                     continue;
                 }
 
-                // ✅ Filtrer les lignes valides
+                // ✅ FIX 2 : garantir quantité >= 1
                 const lignesValides = groupe.lignes
                     .filter(l => {
-                        const q = parseInt(l.quantite, 10);
-                        return !isNaN(q) && q > 0 && l.id_produit;
+                        const q = Math.max(1, parseInt(l.quantite, 10) || 1);
+                        return q > 0 && l.id_produit;
                     })
-                    .map(l => ({
-                        id_produit: l.id_produit,
-                        id_unite_vente: l.id_unite_vente || null,
-                        nom_unite_vente: l.nom_unite_vente || 'Unité',
-                        quantite_base: parseFloat(l.quantite_base) || 1,
-                        quantite: parseInt(l.quantite, 10),
-                        quantite_totale_base: l.quantite_totale_base || null,
-                        prix_achat: l.prix_achat ?? null,
-                        remise: l.remise || 0,
-                    }));
+                    .map(l => {
+                        const qteUV = Math.max(1, parseInt(l.quantite, 10) || 1);
+                        const qteBase = parseFloat(l.quantite_base) || 1;
+                        const qteTotaleBase = l.quantite_totale_base || (qteUV * qteBase);
+
+                        return {
+                            id_produit: l.id_produit,
+                            id_unite_vente: l.id_unite_vente || null,
+                            nom_unite_vente: l.nom_unite_vente || 'Unité',
+                            quantite_base: qteBase,
+                            quantite: qteUV,
+                            quantite_totale_base: Math.max(qteUV, qteTotaleBase),
+                            prix_achat: l.prix_achat ?? null,
+                            remise: l.remise || 0,
+                        };
+                    });
 
                 if (lignesValides.length === 0) {
                     erreurs.push({
@@ -387,7 +367,7 @@ class AssistantAchat {
                     continue;
                 }
 
-                // ✅ Chercher un bon OUVERT existant
+                // ✅ Chercher un bon ouvert existant
                 const [bonsOuverts] = await pool.execute(
                     `SELECT id_commande_achat, numero_commande, statut
                      FROM commandes_achat
@@ -401,7 +381,6 @@ class AssistantAchat {
 
                 const bonExistant = bonsOuverts[0] || null;
 
-                // ✅ Vérifier les produits déjà présents
                 let lignesAAjouter = lignesValides;
 
                 if (bonExistant) {
@@ -434,7 +413,6 @@ class AssistantAchat {
                     }
                 }
 
-                // ✅ Ajouter au bon existant OU créer un nouveau
                 if (bonExistant) {
                     const commande = await CommandeAchat.addLignes(
                         bonExistant.id_commande_achat,
