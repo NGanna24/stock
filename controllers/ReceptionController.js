@@ -429,4 +429,4 @@ class ReceptionController {
     }
 }
 
-export default ReceptionController;
+export default ReceptionController; 

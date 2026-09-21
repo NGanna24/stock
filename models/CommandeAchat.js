@@ -96,7 +96,7 @@ class CommandeAchat {
                     quantite_base = 1,
                     quantite,
                     quantite_totale_base = null,
-                    prix_achat = null,      // ✅ Optionnel : peut être null
+                    prix_achat = null,      
                     remise = 0
                 } = ligne;
 
@@ -155,7 +155,7 @@ class CommandeAchat {
                         nom_unite_vente || 'Unité',
                         qteBase,
                         quantite,
-                        prixAchatFinal,   // ✅ peut être null
+                        prixAchatFinal,
                         remise
                     ]
                 );
@@ -190,77 +190,136 @@ class CommandeAchat {
         }
     }
 
-    /**
-     * ============================================================
-     * ✅ Récupérer une commande par ID avec ses lignes
-     * ============================================================
-     */
-    static async findById(id, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour findById');
-        }
+/**
+ * ============================================================
+ * ✅ Récupérer une commande par ID avec ses lignes
+ *    + quantités déjà reçues et reste à recevoir par ligne
+ * ============================================================
+ */
+static async findById(id, id_utilisateur) {
+    if (!id_utilisateur) {
+        throw new Error('id_utilisateur requis pour findById');
+    }
 
-        try {
-            // En-tête
-            const [rows] = await pool.execute(
-                `SELECT ca.*,
-                        f.nom as fournisseur_nom,
-                        f.telephone as fournisseur_telephone,
-                        f.email as fournisseur_email,
-                        f.ville as fournisseur_ville,
-                        f.pays as fournisseur_pays,
-                        u.fullname as utilisateur_nom
-                 FROM commandes_achat ca
-                 LEFT JOIN fournisseurs f ON ca.id_fournisseur = f.id_fournisseur
-                 LEFT JOIN utilisateurs u ON ca.id_utilisateur = u.id_utilisateur
-                 WHERE ca.id_commande_achat = ?
-                   AND ca.id_utilisateur = ?`,
-                [id, id_utilisateur]
-            );
+    try {
+        // ============================================================
+        // 1. En-tête de la commande
+        // ============================================================
+        const [rows] = await pool.execute(
+            `SELECT ca.*,
+                    f.nom as fournisseur_nom,
+                    f.telephone as fournisseur_telephone,
+                    f.email as fournisseur_email,
+                    f.ville as fournisseur_ville,
+                    f.pays as fournisseur_pays,
+                    u.fullname as utilisateur_nom
+             FROM commandes_achat ca
+             LEFT JOIN fournisseurs f ON ca.id_fournisseur = f.id_fournisseur
+             LEFT JOIN utilisateurs u ON ca.id_utilisateur = u.id_utilisateur
+             WHERE ca.id_commande_achat = ?
+               AND ca.id_utilisateur = ?`,
+            [id, id_utilisateur]
+        );
 
-            if (rows.length === 0) return null;
-            const commande = rows[0];
+        if (rows.length === 0) return null;
+        const commande = rows[0];
 
-            // Lignes
-            const [lignes] = await pool.execute(
-                `SELECT lca.*,
-                        p.nom as produit_nom,
-                        p.id_marque,
-                        m.nom as marque_nom,
-                        p.id_modele,
-                        md.nom as modele_nom,
-                        p.id_unite,
-                        u.symbole as unite_symbole,
-                        uv.nom as unite_vente_nom,
-                        uv.quantite_base as unite_vente_quantite_base
-                 FROM ligne_commande_achat lca
-                 LEFT JOIN produits p ON lca.id_produit = p.id_produit
-                 LEFT JOIN marques m ON p.id_marque = m.id_marque
-                 LEFT JOIN modeles md ON p.id_modele = md.id_modele
-                 LEFT JOIN unites u ON p.id_unite = u.id_unite
-                 LEFT JOIN unites_vente uv ON lca.id_unite_vente = uv.id_unite_vente
-                 WHERE lca.id_commande_achat = ?`,
-                [id]
-            );
+        // ============================================================
+        // 2. Lignes + quantités déjà reçues
+        //    ⚠️ On filtre sur r.id_utilisateur (receptions en a bien une)
+        // ============================================================
+        const [lignes] = await pool.execute(
+            `SELECT lca.*,
+                    p.nom as produit_nom,
+                    p.id_marque,
+                    m.nom as marque_nom,
+                    p.id_modele,
+                    md.nom as modele_nom,
+                    p.id_unite,
+                    u.symbole as unite_symbole,
+                    uv.nom as unite_vente_nom,
+                    uv.quantite_base as unite_vente_quantite_base,
 
-            // ✅ Enrichir (avec prix nullable)
-            commande.lignes = lignes.map(l => ({
+                    -- ✅ Quantité déjà reçue (en unité de base)
+                    COALESCE((
+                        SELECT SUM(rl.quantite_totale_base)
+                        FROM reception_lignes rl
+                        INNER JOIN receptions r
+                            ON rl.id_reception = r.id_reception
+                        WHERE rl.id_ligne_achat = lca.id_ligne_achat
+                          AND r.statut != 'annulee'
+                          AND r.id_utilisateur = ?
+                    ), 0) AS quantite_deja_recue_base
+
+             FROM ligne_commande_achat lca
+             LEFT JOIN produits p ON lca.id_produit = p.id_produit
+             LEFT JOIN marques m ON p.id_marque = m.id_marque
+             LEFT JOIN modeles md ON p.id_modele = md.id_modele
+             LEFT JOIN unites u ON p.id_unite = u.id_unite
+             LEFT JOIN unites_vente uv ON lca.id_unite_vente = uv.id_unite_vente
+             WHERE lca.id_commande_achat = ?`,
+            [id_utilisateur, id]   // ✅ on passe id_utilisateur pour la sous-requête
+        );
+
+        // ============================================================
+        // 3. Enrichissement : reste à recevoir + types
+        // ============================================================
+        commande.lignes = lignes.map(l => {
+            const qteBase = parseFloat(l.quantite_base) || 1;
+            const qteTotaleBase = parseFloat(l.quantite_totale_base)
+                || (parseFloat(l.quantite) * qteBase);
+            const dejaRecueBase = parseFloat(l.quantite_deja_recue_base) || 0;
+
+            const resteBase = Math.max(0, qteTotaleBase - dejaRecueBase);
+
+            const dejaRecueUV = qteBase > 0 ? dejaRecueBase / qteBase : 0;
+            const resteUV = qteBase > 0 ? resteBase / qteBase : 0;
+
+            return {
                 ...l,
                 nom_unite_vente: l.nom_unite_vente || l.unite_vente_nom || 'Unité',
-                quantite_base: parseFloat(l.quantite_base) || 1,
-                quantite_totale_base: parseFloat(l.quantite_totale_base)
-                    || (parseFloat(l.quantite) * (parseFloat(l.quantite_base) || 1)),
+                quantite_base: qteBase,
+                quantite_totale_base: qteTotaleBase,
                 prix_achat: l.prix_achat !== null ? parseFloat(l.prix_achat) : null,
-                montant_total: l.montant_total !== null ? parseFloat(l.montant_total) : null
-            }));
+                montant_total: l.montant_total !== null ? parseFloat(l.montant_total) : null,
 
-            return commande;
+                // ✅ Nouveaux champs
+                quantite_deja_recue_base: dejaRecueBase,
+                reste_a_recevoir_base: resteBase,
+                quantite_deja_recue: Math.round(dejaRecueUV * 100) / 100,
+                reste_a_recevoir: Math.round(resteUV * 100) / 100,
+                est_totalement_recue: resteBase <= 0
+            };
+        });
 
-        } catch (error) {
-            console.error('❌ Error finding commande by ID:', error);
-            throw error;
-        }
+        // ============================================================
+        // 4. Résumé global
+        // ============================================================
+        const totalCommandeeBase = commande.lignes.reduce(
+            (sum, l) => sum + (parseFloat(l.quantite_totale_base) || 0), 0
+        );
+        const totalRecueBase = commande.lignes.reduce(
+            (sum, l) => sum + (parseFloat(l.quantite_deja_recue_base) || 0), 0
+        );
+        const resteTotalBase = Math.max(0, totalCommandeeBase - totalRecueBase);
+
+        commande.resume_reception = {
+            total_commandee_base: totalCommandeeBase,
+            total_recue_base: totalRecueBase,
+            reste_total_base: resteTotalBase,
+            pourcentage_recu: totalCommandeeBase > 0
+                ? Math.round((totalRecueBase / totalCommandeeBase) * 100)
+                : 0,
+            est_complete: resteTotalBase <= 0 && totalCommandeeBase > 0
+        };
+
+        return commande;
+
+    } catch (error) {
+        console.error('❌ Error finding commande by ID:', error);
+        throw error;
     }
+}
 
     /**
      * ============================================================

@@ -367,15 +367,14 @@ class AssistantAchat {
                     continue;
                 }
 
-                // ✅ Chercher un bon ouvert existant
                 const [bonsOuverts] = await pool.execute(
                     `SELECT id_commande_achat, numero_commande, statut
-                     FROM commandes_achat
-                     WHERE id_utilisateur = ?
-                       AND id_fournisseur = ?
-                       AND statut IN ('en_attente', 'envoyee', 'partiellement_recue')
-                     ORDER BY date_creation DESC
-                     LIMIT 1`,
+                    FROM commandes_achat
+                    WHERE id_utilisateur = ?
+                    AND id_fournisseur = ?
+                    AND statut = 'en_attente'
+                    ORDER BY date_creation DESC
+                    LIMIT 1`,
                     [id_utilisateur, groupe.id_fournisseur]
                 );
 
