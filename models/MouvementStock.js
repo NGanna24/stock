@@ -31,100 +31,124 @@ class MouvementStock {
      * @param {number} id_utilisateur        - ID du workspace (obligatoire)
      * @returns {Promise<number>}            - ID du mouvement créé
      */
-    static async enregistrer(data, connection, id_utilisateur) {
-        // --- Validations de base ---
-        if (!connection) {
-            throw new Error('Une connexion MySQL en transaction est obligatoire');
-        }
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour enregistrer un mouvement');
-        }
+/**
+ * ============================================================
+ * MÉTHODE CENTRALE — Enregistre UNIQUEMENT l'historique
+ * ============================================================
+ * ⚠️ Cette méthode NE MODIFIE JAMAIS le stock du produit.
+ *    Elle enregistre seulement dans `mouvements_stock`.
+ *
+ * ✅ NOUVEAU : accepte les quantités NÉGATIVES pour les ajustements
+ *    d'inventaire (manquant/surplus).
+ */
+static async enregistrer(data, connection, id_utilisateur) {
+    // --- Validations de base ---
+    if (!connection) {
+        throw new Error('Une connexion MySQL en transaction est obligatoire');
+    }
+    if (!id_utilisateur) {
+        throw new Error('id_utilisateur requis pour enregistrer un mouvement');
+    }
 
-        const {
+    const {
+        id_produit,
+        type_mouvement,
+        quantite,
+        id_reference = null,
+        type_reference = null,
+        notes = null
+    } = data;
+
+    if (!id_produit) throw new Error('id_produit requis');
+    if (!['entree', 'sortie', 'ajustement', 'transfert'].includes(type_mouvement)) {
+        throw new Error(`Type de mouvement invalide: ${type_mouvement}`);
+    }
+
+    // ✅ Parse sécurisé
+    const qte = parseFloat(quantite);
+
+    if (isNaN(qte)) {
+        throw new Error('La quantité doit être un nombre');
+    }
+
+    // ✅ Quantité nulle → on ignore (sans planter)
+    if (qte === 0) {
+        console.warn('⚠️ Mouvement ignoré (quantité nulle):', {
+            id_produit, type_mouvement, id_reference
+        });
+        return null;
+    }
+
+    // ✅ Quantité négative AUTORISÉE uniquement pour les ajustements
+    if (qte < 0 && type_mouvement !== 'ajustement') {
+        throw new Error('La quantité doit être un nombre positif');
+    }
+
+    // --- Lire l'état ACTUEL du produit (traçabilité) ---
+    const [rows] = await connection.execute(
+        `SELECT quantite_stock
+         FROM produits
+         WHERE id_produit = ? AND id_utilisateur = ?`,
+        [id_produit, id_utilisateur]
+    );
+    if (rows.length === 0) {
+        throw new Error(
+            `Produit ID ${id_produit} non trouvé dans le workspace ${id_utilisateur}`
+        );
+    }
+    const quantite_actuelle = parseFloat(rows[0].quantite_stock) || 0;
+
+    // Calcul de l'ancienne/nouvelle quantité selon le type
+    let ancienne_quantite;
+    let nouvelle_quantite;
+
+    switch (type_mouvement) {
+        case 'entree':
+            nouvelle_quantite = quantite_actuelle;
+            ancienne_quantite = quantite_actuelle - qte;
+            break;
+        case 'sortie':
+            nouvelle_quantite = quantite_actuelle;
+            ancienne_quantite = quantite_actuelle + qte;
+            break;
+        case 'ajustement':
+            // ✅ Pour un ajustement, l'appelant a déjà mis à jour le stock.
+            //    On stocke la valeur passée + l'état actuel.
+            nouvelle_quantite = quantite_actuelle;
+            ancienne_quantite = quantite_actuelle - qte;
+            break;
+        case 'transfert':
+            nouvelle_quantite = quantite_actuelle;
+            ancienne_quantite = quantite_actuelle;
+            break;
+        default:
+            throw new Error(`Type de mouvement non géré: ${type_mouvement}`);
+    }
+
+    // ============================================================
+    // ✅ INSERT UNIQUEMENT — AUCUN UPDATE DE STOCK ICI
+    // ============================================================
+    const [result] = await connection.execute(
+        `INSERT INTO mouvements_stock (
+            id_utilisateur, id_produit, type_mouvement, quantite,
+            ancienne_quantite, nouvelle_quantite,
+            id_reference, type_reference, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            id_utilisateur,
             id_produit,
             type_mouvement,
-            quantite,
-            id_reference = null,
-            type_reference = null,
-            notes = null
-        } = data;
+            qte,                       // ✅ peut être négatif pour ajustement
+            ancienne_quantite,
+            nouvelle_quantite,
+            id_reference,
+            type_reference,
+            notes
+        ]
+    );
 
-        if (!id_produit) throw new Error('id_produit requis');
-        if (!['entree', 'sortie', 'ajustement', 'transfert'].includes(type_mouvement)) {
-            throw new Error(`Type de mouvement invalide: ${type_mouvement}`);
-        }
-
-        const qte = parseFloat(quantite);
-        if (isNaN(qte) || qte <= 0) {
-            throw new Error('La quantité doit être un nombre positif');
-        }
-
-        // --- Lire l'état ACTUEL du produit (pour traçabilité uniquement) ---
-        // ⚠️ On lit le stock APRÈS que le modèle appelant ait fait son UPDATE,
-        //    donc `ancienne_quantite` ici = stock avant ce mouvement.
-        //    Pour obtenir la vraie ancienne quantité, l'appelant devrait
-        //    la passer en paramètre. On la calcule par déduction.
-        const [rows] = await connection.execute(
-            `SELECT quantite_stock
-             FROM produits
-             WHERE id_produit = ? AND id_utilisateur = ?`,
-            [id_produit, id_utilisateur]
-        );
-        if (rows.length === 0) {
-            throw new Error(
-                `Produit ID ${id_produit} non trouvé dans le workspace ${id_utilisateur}`
-            );
-        }
-        const quantite_actuelle = parseFloat(rows[0].quantite_stock) || 0;
-
-        // Calculer l'ancienne quantité par déduction (pour la colonne `ancienne_quantite`)
-        let ancienne_quantite;
-        let nouvelle_quantite;
-        switch (type_mouvement) {
-            case 'entree':
-                nouvelle_quantite = quantite_actuelle;
-                ancienne_quantite = quantite_actuelle - qte;
-                break;
-            case 'sortie':
-                nouvelle_quantite = quantite_actuelle;
-                ancienne_quantite = quantite_actuelle + qte;
-                break;
-            case 'ajustement':
-                nouvelle_quantite = qte;
-                ancienne_quantite = quantite_actuelle;
-                break;
-            case 'transfert':
-                nouvelle_quantite = quantite_actuelle;
-                ancienne_quantite = quantite_actuelle;
-                break;
-            default:
-                throw new Error(`Type de mouvement non géré: ${type_mouvement}`);
-        }
-
-        // ============================================================
-        // ✅ INSERT UNIQUEMENT — AUCUN UPDATE DE STOCK ICI
-        // ============================================================
-        const [result] = await connection.execute(
-            `INSERT INTO mouvements_stock (
-                id_utilisateur, id_produit, type_mouvement, quantite,
-                ancienne_quantite, nouvelle_quantite,
-                id_reference, type_reference, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                id_utilisateur,
-                id_produit,
-                type_mouvement,
-                qte,
-                ancienne_quantite,
-                nouvelle_quantite,
-                id_reference,
-                type_reference,
-                notes
-            ]
-        );
-
-        return result.insertId;
-    }
+    return result.insertId;
+}
 
     /**
      * ============================================================

@@ -31,17 +31,23 @@ class RetourFournisseur {
 
     /**
      * ============================================================
-     * Créer un nouveau retour fournisseur
+     * ✅ Créer un nouveau retour fournisseur (VERSION STRICTE)
+     * ============================================================
+     * Règles métier appliquées :
+     *  1. Le produit doit avoir été RÉELLEMENT REÇU du fournisseur
+     *  2. La quantité retournée ≤ reçu net (reçu − déjà retourné)
+     *  3. La quantité retournée ≤ stock actuel
+     *  4. Auto-détection de la commande/réception associée
      * ============================================================
      */
     static async create(data) {
         const {
             id_fournisseur,
-            id_commande_achat,
-            id_reception,
+            id_commande_achat = null,
+            id_reception = null,
             date_retour,
             motif_retour,
-            notes,
+            notes = null,
             id_utilisateur,
             lignes = []
         } = data;
@@ -55,12 +61,14 @@ class RetourFournisseur {
             await connection.beginTransaction();
 
             // ============================================================
-            // 1. VALIDATIONS
+            // 1. VALIDATIONS DE BASE
             // ============================================================
             if (!id_fournisseur) throw new Error('Le fournisseur est obligatoire');
             if (!date_retour)    throw new Error('La date de retour est obligatoire');
             if (!motif_retour)   throw new Error('Le motif de retour est obligatoire');
-            if (lignes.length === 0) throw new Error('Au moins un produit est requis');
+            if (!Array.isArray(lignes) || lignes.length === 0) {
+                throw new Error('Au moins un produit est requis');
+            }
 
             // ============================================================
             // 2. VÉRIFICATION DU FOURNISSEUR (workspace)
@@ -78,11 +86,23 @@ class RetourFournisseur {
             }
 
             // ============================================================
-            // 3. VÉRIFICATION DES PRODUITS (workspace)
+            // 3. VÉRIFICATION DES LIGNES (règle métier stricte)
             // ============================================================
-            for (const ligne of lignes) {
-                const { id_produit, quantite } = ligne;
+            const lignesValidees = [];
 
+            for (const ligne of lignes) {
+                const {
+                    id_produit,
+                    id_ligne_achat = null,
+                    quantite,
+                    prix_achat = null,
+                    remise = 0,
+                    motif_retour: motifLigne,
+                    etat_produit = 'neuf',
+                    notes_ligne = null
+                } = ligne;
+
+                // --- Vérifier le produit dans le workspace ---
                 const [produitRows] = await connection.execute(
                     `SELECT id_produit, nom, quantite_stock, prix_achat
                      FROM produits
@@ -93,26 +113,130 @@ class RetourFournisseur {
                 if (produitRows.length === 0) {
                     throw new Error(`Produit ID ${id_produit} non trouvé`);
                 }
+
+                const produit = produitRows[0];
+
                 if (!quantite || parseFloat(quantite) <= 0) {
-                    throw new Error(`La quantité pour ${produitRows[0].nom} doit être positive`);
+                    throw new Error(`La quantité pour "${produit.nom}" doit être positive`);
                 }
 
-                const stockDisponible = parseFloat(produitRows[0].quantite_stock) || 0;
-                if (parseFloat(quantite) > stockDisponible) {
+                const qteDemandee = parseFloat(quantite);
+
+                // ============================================================
+                // ✅ RÈGLE 1 : quantité nette reçue du fournisseur
+                // ============================================================
+                const [recuRows] = await connection.execute(
+                    `SELECT COALESCE(SUM(rl.quantite_totale_base), 0) AS total_recu_base
+                     FROM reception_lignes rl
+                     INNER JOIN receptions r ON rl.id_reception = r.id_reception
+                     INNER JOIN commandes_achat ca ON r.id_commande_achat = ca.id_commande_achat
+                     WHERE rl.id_produit = ?
+                       AND r.id_utilisateur = ?
+                       AND ca.id_fournisseur = ?
+                       AND r.statut != 'annulee'
+                       AND ca.statut != 'annulee'`,
+                    [id_produit, id_utilisateur, id_fournisseur]
+                );
+
+                const totalRecuBase = parseFloat(recuRows[0].total_recu_base) || 0;
+
+                // Quantité déjà retournée à ce fournisseur (hors annulés)
+                const [retourneRows] = await connection.execute(
+                    `SELECT COALESCE(SUM(rl.quantite), 0) AS total_retourne
+                     FROM retour_lignes rl
+                     INNER JOIN retours_fournisseurs rf ON rl.id_retour = rf.id_retour
+                     WHERE rl.id_produit = ?
+                       AND rf.id_utilisateur = ?
+                       AND rf.id_fournisseur = ?
+                       AND rf.statut != 'annule'`,
+                    [id_produit, id_utilisateur, id_fournisseur]
+                );
+
+                const totalRetourne = parseFloat(retourneRows[0].total_retourne) || 0;
+                const quantiteNetteRecue = Math.max(0, totalRecuBase - totalRetourne);
+
+                if (quantiteNetteRecue <= 0) {
                     throw new Error(
-                        `Stock insuffisant pour ${produitRows[0].nom}. ` +
-                        `Disponible: ${stockDisponible}, Demandé: ${quantite}`
+                        `Aucune quantité reçue à retourner pour "${produit.nom}" ` +
+                        `auprès de ce fournisseur. ` +
+                        `(Reçu: ${totalRecuBase}, Déjà retourné: ${totalRetourne})`
                     );
+                }
+
+                if (qteDemandee > quantiteNetteRecue) {
+                    throw new Error(
+                        `Quantité trop élevée pour "${produit.nom}". ` +
+                        `Reçu net: ${quantiteNetteRecue}, Demandé: ${qteDemandee}`
+                    );
+                }
+
+                // ============================================================
+                // ✅ RÈGLE 2 : la quantité doit être disponible en stock
+                // ============================================================
+                const stockDisponible = parseFloat(produit.quantite_stock) || 0;
+
+                if (qteDemandee > stockDisponible) {
+                    throw new Error(
+                        `Stock insuffisant pour "${produit.nom}". ` +
+                        `Disponible: ${stockDisponible}, Demandé: ${qteDemandee}`
+                    );
+                }
+
+                // --- Prix unitaire (déduit si absent) ---
+                const prixUnitaire = (prix_achat && parseFloat(prix_achat) > 0)
+                    ? parseFloat(prix_achat)
+                    : parseFloat(produit.prix_achat) || 0;
+
+                lignesValidees.push({
+                    id_produit,
+                    id_ligne_achat,
+                    quantite: qteDemandee,
+                    prix_achat: prixUnitaire,
+                    remise: parseFloat(remise) || 0,
+                    motif_retour: motifLigne || motif_retour,
+                    etat_produit,
+                    notes_ligne
+                });
+            }
+
+            // ============================================================
+            // 4. AUTO-DÉTECTION de la réception/commande (si non fournies)
+            // ============================================================
+            let commandeFinale = id_commande_achat;
+            let receptionFinale = id_reception;
+
+            if (!commandeFinale || !receptionFinale) {
+                const idsProduits = lignesValidees.map(l => l.id_produit);
+                const placeholders = idsProduits.map(() => '?').join(',');
+
+                const [recente] = await connection.execute(
+                    `SELECT r.id_reception, r.id_commande_achat
+                     FROM receptions r
+                     INNER JOIN reception_lignes rl ON rl.id_reception = r.id_reception
+                     INNER JOIN commandes_achat ca ON r.id_commande_achat = ca.id_commande_achat
+                     WHERE r.id_utilisateur = ?
+                       AND ca.id_fournisseur = ?
+                       AND rl.id_produit IN (${placeholders})
+                       AND r.statut != 'annulee'
+                       AND ca.statut != 'annulee'
+                     ORDER BY r.date_reception DESC, r.id_reception DESC
+                     LIMIT 1`,
+                    [id_utilisateur, id_fournisseur, ...idsProduits]
+                );
+
+                if (recente.length > 0) {
+                    if (!commandeFinale) commandeFinale = recente[0].id_commande_achat;
+                    if (!receptionFinale) receptionFinale = recente[0].id_reception;
                 }
             }
 
             // ============================================================
-            // 4. GÉNÉRATION DU NUMÉRO
+            // 5. GÉNÉRATION DU NUMÉRO
             // ============================================================
             const numero_retour = await this.genererNumero(id_utilisateur);
 
             // ============================================================
-            // 5. CRÉATION DE L'EN-TÊTE
+            // 6. CRÉATION DE L'EN-TÊTE
             // ============================================================
             const [result] = await connection.execute(
                 `INSERT INTO retours_fournisseurs (
@@ -125,42 +249,21 @@ class RetourFournisseur {
                     numero_retour,
                     date_retour,
                     id_fournisseur,
-                    id_commande_achat || null,
-                    id_reception || null,
+                    commandeFinale || null,
+                    receptionFinale || null,
                     motif_retour,
-                    notes || null
+                    notes
                 ]
             );
 
             const id_retour = result.insertId;
 
             // ============================================================
-            // 6. TRAITEMENT DES LIGNES
+            // 7. TRAITEMENT DES LIGNES
             // ============================================================
             let montant_total = 0;
 
-            for (const ligne of lignes) {
-                const {
-                    id_produit,
-                    id_ligne_achat = null,
-                    quantite,
-                    prix_achat = 0,
-                    remise = 0,
-                    motif_retour: motifLigne,
-                    etat_produit = 'neuf',
-                    notes_ligne = null
-                } = ligne;
-
-                let prixUnitaire = prix_achat;
-                if (!prixUnitaire || prixUnitaire === 0) {
-                    const [produitRows] = await connection.execute(
-                        `SELECT prix_achat FROM produits
-                         WHERE id_produit = ? AND id_utilisateur = ?`,
-                        [id_produit, id_utilisateur]
-                    );
-                    prixUnitaire = parseFloat(produitRows[0]?.prix_achat) || 0;
-                }
-
+            for (const lc of lignesValidees) {
                 // Insérer la ligne de retour
                 await connection.execute(
                     `INSERT INTO retour_lignes (
@@ -170,29 +273,29 @@ class RetourFournisseur {
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                     [
                         id_retour,
-                        id_produit,
-                        id_ligne_achat,
-                        quantite,
-                        prixUnitaire,
-                        remise || 0,
-                        motifLigne || motif_retour,
-                        etat_produit,
-                        notes_ligne
+                        lc.id_produit,
+                        lc.id_ligne_achat,
+                        lc.quantite,
+                        lc.prix_achat,
+                        lc.remise,
+                        lc.motif_retour,
+                        lc.etat_produit,
+                        lc.notes_ligne
                     ]
                 );
 
-                // ✅ Mouvement de stock centralisé (met à jour le stock + statut)
+                // ✅ Mouvement de stock centralisé (sortie + maj produits)
                 await MouvementStock.enregistrer({
-                    id_produit,
+                    id_produit: lc.id_produit,
                     type_mouvement: 'sortie',
-                    quantite,
+                    quantite: lc.quantite,
                     id_reference: id_retour,
                     type_reference: 'retour_fournisseur',
-                    notes: `Retour fournisseur ${numero_retour} - ${motifLigne || motif_retour}`
+                    notes: `Retour fournisseur ${numero_retour} - ${lc.motif_retour}`
                 }, connection, id_utilisateur);
 
-                // Enregistrer la sortie de stock (historique dédié)
-                const ref_sortie = `SORTIE-RET-${Date.now()}-${id_produit}`;
+                // Traçabilité sorties_stock
+                const ref_sortie = `SORTIE-RET-${Date.now()}-${lc.id_produit}`;
                 await connection.execute(
                     `INSERT INTO sorties_stock (
                         id_utilisateur, reference, date_sortie, id_produit,
@@ -202,17 +305,17 @@ class RetourFournisseur {
                         id_utilisateur,
                         ref_sortie,
                         date_retour,
-                        id_produit,
-                        quantite,
-                        notes_ligne || `Retour fournisseur ${numero_retour}`
+                        lc.id_produit,
+                        lc.quantite,
+                        lc.notes_ligne || `Retour fournisseur ${numero_retour}`
                     ]
                 );
 
-                montant_total += parseFloat(quantite) * prixUnitaire * (1 - (remise || 0) / 100);
+                montant_total += lc.quantite * lc.prix_achat * (1 - lc.remise / 100);
             }
 
             // ============================================================
-            // 7. MISE À JOUR DU MONTANT TOTAL
+            // 8. MISE À JOUR DU MONTANT TOTAL
             // ============================================================
             await connection.execute(
                 `UPDATE retours_fournisseurs SET montant_total = ?
@@ -256,7 +359,7 @@ class RetourFournisseur {
                  LEFT JOIN receptions rec ON r.id_reception = rec.id_reception
                  LEFT JOIN utilisateurs u ON r.id_utilisateur = u.id_utilisateur
                  WHERE r.id_retour = ?
-                   AND r.id_utilisateur = ?`,        // ✅ ISOLATION
+                   AND r.id_utilisateur = ?`,
                 [id, id_utilisateur]
             );
 
@@ -307,7 +410,7 @@ class RetourFournisseur {
                 LEFT JOIN fournisseurs f ON r.id_fournisseur = f.id_fournisseur
                 LEFT JOIN commandes_achat ca ON r.id_commande_achat = ca.id_commande_achat
                 LEFT JOIN utilisateurs u ON r.id_utilisateur = u.id_utilisateur
-                WHERE r.id_utilisateur = ?              -- ✅ ISOLATION
+                WHERE r.id_utilisateur = ?
             `;
             const params = [id_utilisateur];
 
@@ -375,7 +478,7 @@ class RetourFournisseur {
                  FROM retours_fournisseurs r
                  LEFT JOIN fournisseurs f ON r.id_fournisseur = f.id_fournisseur
                  WHERE r.statut = ?
-                   AND r.id_utilisateur = ?             -- ✅ ISOLATION
+                   AND r.id_utilisateur = ?
                  ORDER BY r.date_retour DESC`,
                 [statut, id_utilisateur]
             );
@@ -402,7 +505,7 @@ class RetourFournisseur {
                  FROM retours_fournisseurs r
                  LEFT JOIN utilisateurs u ON r.id_utilisateur = u.id_utilisateur
                  WHERE r.id_fournisseur = ?
-                   AND r.id_utilisateur = ?             -- ✅ ISOLATION
+                   AND r.id_utilisateur = ?
                  ORDER BY r.date_retour DESC`,
                 [id_fournisseur, id_utilisateur]
             );
@@ -415,7 +518,7 @@ class RetourFournisseur {
 
     /**
      * ============================================================
-     * Mettre à jour le statut (✅ pool, pas connection)
+     * Mettre à jour le statut
      * ============================================================
      */
     static async updateStatut(id, statut, id_utilisateur) {
@@ -431,11 +534,10 @@ class RetourFournisseur {
 
             const dateTraitement = statut === 'traite' ? new Date() : null;
 
-            // ✅ Utilise pool (pas connection)
             const [result] = await pool.execute(
                 `UPDATE retours_fournisseurs
                  SET statut = ?, date_traitement = ?
-                 WHERE id_retour = ? AND id_utilisateur = ?`,   // ✅ ISOLATION
+                 WHERE id_retour = ? AND id_utilisateur = ?`,
                 [statut, dateTraitement, id, id_utilisateur]
             );
             return result.affectedRows > 0;
@@ -447,7 +549,7 @@ class RetourFournisseur {
 
     /**
      * ============================================================
-     * Statistiques des retours fournisseurs (par workspace)
+     * Statistiques des retours fournisseurs
      * ============================================================
      */
     static async getStats(id_utilisateur) {
@@ -467,7 +569,7 @@ class RetourFournisseur {
                     COALESCE(SUM(montant_total), 0) as total_montant,
                     COALESCE(AVG(montant_total), 0) as moyenne_montant
                  FROM retours_fournisseurs
-                 WHERE id_utilisateur = ?`,             // ✅ ISOLATION
+                 WHERE id_utilisateur = ?`,
                 [id_utilisateur]
             );
 
@@ -527,7 +629,6 @@ class RetourFournisseur {
             );
 
             for (const ligne of lignes) {
-                // ✅ Mouvement d'entrée (réintégration)
                 await MouvementStock.enregistrer({
                     id_produit: ligne.id_produit,
                     type_mouvement: 'entree',

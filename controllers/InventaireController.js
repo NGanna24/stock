@@ -2,14 +2,8 @@
 import Inventaire from '../models/Inventaire.js';
 
 class InventaireController {
-    /**
-     * ============================================================
-     * Récupérer tous les inventaires du workspace
-     * ============================================================
-     */
     static async getAllInventaires(req, res) {
         try {
-            // ✅ req.workspaceId en 2e argument
             const inventaires = await Inventaire.findAll(req.query, req.workspaceId);
             res.status(200).json({
                 success: true,
@@ -20,22 +14,14 @@ class InventaireController {
             console.error('❌ Erreur getAllInventaires:', error);
             res.status(500).json({
                 success: false,
-                message: 'Erreur lors de la récupération des inventaires',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+                message: 'Erreur lors de la récupération des inventaires'
             });
         }
     }
 
-    /**
-     * ============================================================
-     * Récupérer un inventaire par ID
-     * ============================================================
-     */
     static async getInventaireById(req, res) {
         try {
             const { id } = req.params;
-
-            // ✅ req.workspaceId en 2e argument
             const inventaire = await Inventaire.findById(id, req.workspaceId);
 
             if (!inventaire) {
@@ -49,22 +35,14 @@ class InventaireController {
             console.error('❌ Erreur getInventaireById:', error);
             res.status(500).json({
                 success: false,
-                message: 'Erreur lors de la récupération de l\'inventaire',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+                message: 'Erreur lors de la récupération de l\'inventaire'
             });
         }
     }
 
-    /**
-     * ============================================================
-     * Créer un inventaire
-     * ============================================================
-     */
     static async createInventaire(req, res) {
         try {
             const data = req.body;
-
-            // ✅ CORRIGÉ : req.workspaceId au lieu de req.user.id_utilisateur
             data.id_utilisateur = req.workspaceId;
 
             const inventaire = await Inventaire.create(data);
@@ -77,21 +55,14 @@ class InventaireController {
             console.error('❌ Erreur createInventaire:', error);
             res.status(400).json({
                 success: false,
-                message: error.message || 'Erreur lors de la création de l\'inventaire'
+                message: error.message || 'Erreur lors de la création'
             });
         }
     }
 
-    /**
-     * ============================================================
-     * Démarrer un inventaire
-     * ============================================================
-     */
     static async demarrerInventaire(req, res) {
         try {
             const { id } = req.params;
-
-            // ✅ CORRIGÉ : req.workspaceId
             const inventaire = await Inventaire.demarrer(id, req.workspaceId);
 
             res.status(200).json({
@@ -108,23 +79,13 @@ class InventaireController {
         }
     }
 
-    /**
-     * ============================================================
-     * Saisir une ligne (quantité réelle)
-     * ============================================================
-     */
     static async saisirLigne(req, res) {
         try {
             const { id, id_ligne } = req.params;
             const { quantite_reelle, notes } = req.body;
 
-            // ✅ req.workspaceId en 5e argument
             const result = await Inventaire.saisirLigne(
-                id,
-                id_ligne,
-                quantite_reelle,
-                notes,
-                req.workspaceId
+                id, id_ligne, quantite_reelle, notes, req.workspaceId
             );
 
             res.status(200).json({
@@ -141,11 +102,6 @@ class InventaireController {
         }
     }
 
-    /**
-     * ============================================================
-     * Saisie en masse
-     * ============================================================
-     */
     static async saisirLignesEnMasse(req, res) {
         try {
             const { id } = req.params;
@@ -158,7 +114,6 @@ class InventaireController {
                 });
             }
 
-            // ✅ req.workspaceId en 3e argument
             const result = await Inventaire.saisirLignesEnMasse(id, lignes, req.workspaceId);
 
             res.status(200).json({
@@ -175,22 +130,17 @@ class InventaireController {
         }
     }
 
-    /**
-     * ============================================================
-     * Valider un inventaire (crée les ajustements)
-     * ============================================================
-     */
     static async validerInventaire(req, res) {
         try {
             const { id } = req.params;
+            const valide_par_nom = req.user?.fullname || req.user?.email || 'Système';
 
-            // ✅ CORRIGÉ : req.workspaceId
-            const inventaire = await Inventaire.valider(id, req.workspaceId);
+            const result = await Inventaire.valider(id, req.workspaceId, valide_par_nom);
 
             res.status(200).json({
                 success: true,
-                message: 'Inventaire validé, ajustements créés',
-                data: inventaire
+                message: `Inventaire validé. ${result.nb_ajustements} ajustement(s) créé(s).`,
+                data: result
             });
         } catch (error) {
             console.error('❌ Erreur validerInventaire:', error);
@@ -201,16 +151,9 @@ class InventaireController {
         }
     }
 
-    /**
-     * ============================================================
-     * Annuler un inventaire
-     * ============================================================
-     */
     static async annulerInventaire(req, res) {
         try {
             const { id } = req.params;
-
-            // ✅ req.workspaceId en 2e argument
             const inventaire = await Inventaire.annuler(id, req.workspaceId);
 
             res.status(200).json({
@@ -227,16 +170,9 @@ class InventaireController {
         }
     }
 
-    /**
-     * ============================================================
-     * Supprimer un inventaire
-     * ============================================================
-     */
     static async deleteInventaire(req, res) {
         try {
             const { id } = req.params;
-
-            // ✅ req.workspaceId en 2e argument
             await Inventaire.delete(id, req.workspaceId);
 
             res.status(200).json({
@@ -252,16 +188,9 @@ class InventaireController {
         }
     }
 
-    /**
-     * ============================================================
-     * Statistiques des inventaires (workspace)
-     * ============================================================
-     */
     static async getInventaireStats(req, res) {
         try {
-            // ✅ req.workspaceId en argument
             const stats = await Inventaire.getStats(req.workspaceId);
-
             res.status(200).json({ success: true, data: stats });
         } catch (error) {
             console.error('❌ Erreur getInventaireStats:', error);

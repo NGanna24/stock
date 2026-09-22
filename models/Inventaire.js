@@ -45,15 +45,9 @@ class Inventaire {
             id_utilisateur
         } = data;
 
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis');
-        }
-        if (!libelle || libelle.trim() === '') {
-            throw new Error('Le libellé est obligatoire');
-        }
-        if (!date_debut) {
-            throw new Error('La date de début est obligatoire');
-        }
+        if (!id_utilisateur) throw new Error('id_utilisateur requis');
+        if (!libelle || libelle.trim() === '') throw new Error('Le libellé est obligatoire');
+        if (!date_debut) throw new Error('La date de début est obligatoire');
         if (!['complet', 'partiel', 'tournant'].includes(type_inventaire)) {
             throw new Error('Type d\'inventaire invalide');
         }
@@ -62,7 +56,6 @@ class Inventaire {
         try {
             await connection.beginTransaction();
 
-            // ✅ Générer la référence DANS le workspace
             const reference = await this.genererReference(id_utilisateur);
 
             const [result] = await connection.execute(
@@ -95,19 +88,15 @@ class Inventaire {
     /**
      * ============================================================
      * Démarrer un inventaire (planifie → en_cours)
-     * Génère les lignes avec snapshot du stock théorique
      * ============================================================
      */
     static async demarrer(id, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour demarrer');
-        }
+        if (!id_utilisateur) throw new Error('id_utilisateur requis pour demarrer');
 
         const connection = await pool.getConnection();
         try {
             await connection.beginTransaction();
 
-            // ✅ Vérifier l'inventaire DANS le workspace
             const [invRows] = await connection.execute(
                 `SELECT * FROM inventaires
                  WHERE id_inventaire = ? AND id_utilisateur = ?
@@ -118,14 +107,12 @@ class Inventaire {
             const inventaire = invRows[0];
 
             if (inventaire.statut !== 'planifie') {
-                throw new Error(
-                    `Impossible de démarrer un inventaire avec statut "${inventaire.statut}"`
-                );
+                throw new Error(`Impossible de démarrer un inventaire avec statut "${inventaire.statut}"`);
             }
 
-            // ✅ Récupérer UNIQUEMENT les produits du workspace
+            // Récupérer les produits du workspace
             let produitsQuery = `
-                SELECT id_produit, quantite_stock, emplacement
+                SELECT id_produit, nom, quantite_stock, emplacement
                 FROM produits
                 WHERE id_utilisateur = ?
             `;
@@ -163,7 +150,6 @@ class Inventaire {
                 );
             }
 
-            // Passer en 'en_cours'
             await connection.execute(
                 `UPDATE inventaires SET statut = 'en_cours'
                  WHERE id_inventaire = ? AND id_utilisateur = ?`,
@@ -187,15 +173,12 @@ class Inventaire {
      * ============================================================
      */
     static async saisirLigne(id_inventaire, id_ligne, quantite_reelle, notes = null, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour saisirLigne');
-        }
+        if (!id_utilisateur) throw new Error('id_utilisateur requis pour saisirLigne');
 
         const connection = await pool.getConnection();
         try {
             await connection.beginTransaction();
 
-            // ✅ Vérifier inventaire DANS le workspace
             const [invRows] = await connection.execute(
                 `SELECT statut FROM inventaires
                  WHERE id_inventaire = ? AND id_utilisateur = ?`,
@@ -203,9 +186,7 @@ class Inventaire {
             );
             if (invRows.length === 0) throw new Error('Inventaire non trouvé');
             if (invRows[0].statut !== 'en_cours') {
-                throw new Error(
-                    `Impossible de saisir : inventaire au statut "${invRows[0].statut}"`
-                );
+                throw new Error(`Impossible de saisir : inventaire au statut "${invRows[0].statut}"`);
             }
 
             const qteReelle = parseFloat(quantite_reelle);
@@ -213,7 +194,6 @@ class Inventaire {
                 throw new Error('La quantité réelle doit être un nombre positif');
             }
 
-            // Récupérer la ligne
             const [ligneRows] = await connection.execute(
                 `SELECT quantite_theorique FROM inventaire_lignes
                  WHERE id_ligne = ? AND id_inventaire = ?`,
@@ -251,15 +231,12 @@ class Inventaire {
      * ============================================================
      */
     static async saisirLignesEnMasse(id_inventaire, lignes, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour saisirLignesEnMasse');
-        }
+        if (!id_utilisateur) throw new Error('id_utilisateur requis pour saisirLignesEnMasse');
 
         const connection = await pool.getConnection();
         try {
             await connection.beginTransaction();
 
-            // ✅ Vérifier workspace
             const [invRows] = await connection.execute(
                 `SELECT statut FROM inventaires
                  WHERE id_inventaire = ? AND id_utilisateur = ?`,
@@ -310,19 +287,20 @@ class Inventaire {
 
     /**
      * ============================================================
-     * Valider un inventaire (crée les ajustements)
+     * ✅ VALIDER un inventaire (VERSION CORRIGÉE)
+     *    - Applique le stock réel aux produits
+     *    - Crée les ajustements signés
+     *    - Tracé dans mouvements_stock
      * ============================================================
      */
-    static async valider(id, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour valider');
-        }
+    static async valider(id, id_utilisateur, valide_par_nom = null) {
+        if (!id_utilisateur) throw new Error('id_utilisateur requis pour valider');
 
         const connection = await pool.getConnection();
         try {
             await connection.beginTransaction();
 
-            // ✅ Vérifier workspace
+            // 1. Vérifier l'inventaire
             const [invRows] = await connection.execute(
                 `SELECT * FROM inventaires
                  WHERE id_inventaire = ? AND id_utilisateur = ?
@@ -333,57 +311,84 @@ class Inventaire {
             const inventaire = invRows[0];
 
             if (inventaire.statut !== 'en_cours') {
-                throw new Error(
-                    `Impossible de valider un inventaire au statut "${inventaire.statut}"`
-                );
+                throw new Error(`Impossible de valider un inventaire au statut "${inventaire.statut}"`);
             }
 
-            // Récupérer les lignes avec écart
+            // 2. Récupérer TOUTES les lignes (pas seulement les écarts)
             const [lignes] = await connection.execute(
-                `SELECT * FROM inventaire_lignes
-                 WHERE id_inventaire = ? AND ecart <> 0`,
+                `SELECT * FROM inventaire_lignes WHERE id_inventaire = ?`,
                 [id]
             );
 
-            // Créer un ajustement pour chaque écart
+            let nbAjustements = 0;
+            let valeurEcartTotal = 0;
+
+            // 3. Pour chaque ligne avec écart → ajustement + mise à jour stock
             for (const ligne of lignes) {
                 const theorique = parseFloat(ligne.quantite_theorique) || 0;
                 const reelle = parseFloat(ligne.quantite_reelle) || 0;
                 const ecart = theorique - reelle;
 
+                // ✅ Mise à jour du stock MÊME SI pas d'écart (pour être sûr)
+                await connection.execute(
+                    `UPDATE produits
+                     SET quantite_stock = ?,
+                         statut = CASE WHEN ? > 0 THEN 'disponible' ELSE 'rupture' END
+                     WHERE id_produit = ? AND id_utilisateur = ?`,
+                    [reelle, reelle, ligne.id_produit, id_utilisateur]
+                );
+
+                // Si pas d'écart, on ne crée pas d'ajustement (pas nécessaire)
+                if (ecart === 0) continue;
+
+                // ✅ Quantité d'ajustement SIGNÉE
+                // ecart > 0 → manquant (sortie)
+                // ecart < 0 → surplus (entrée)
+                const quantiteAjustement = -ecart; // on applique la correction
+
+                // Récupérer le prix d'achat pour valoriser
+                const [prodRows] = await connection.execute(
+                    `SELECT prix_achat FROM produits WHERE id_produit = ?`,
+                    [ligne.id_produit]
+                );
+                const prixAchat = parseFloat(prodRows[0]?.prix_achat) || 0;
+                valeurEcartTotal += Math.abs(ecart) * prixAchat;
+
+                // Créer l'ajustement
                 const refAjust = `AJU-INV-${id}-${ligne.id_ligne}`;
                 const [ajustResult] = await connection.execute(
                     `INSERT INTO ajustements_stock (
                         id_utilisateur, reference, date_ajustement, id_produit,
                         quantite, ancienne_quantite, nouvelle_quantite,
                         motif, notes
-                    ) VALUES (?, ?, CURDATE(), ?, ?, ?, ?, ?, ?)`,
+                    ) VALUES (?, ?, CURDATE(), ?, ?, ?, ?, 'inventaire', ?)`,
                     [
                         id_utilisateur,
                         refAjust,
                         ligne.id_produit,
-                        Math.abs(ecart),
+                        quantiteAjustement,  // ✅ signé
                         theorique,
                         reelle,
-                        'inventaire',
-                        `Ajustement suite à inventaire ${inventaire.reference}`
+                        `Ajustement suite à inventaire ${inventaire.reference} (écart: ${ecart})`
                     ]
                 );
                 const id_ajustement = ajustResult.insertId;
 
-                // ✅ Mouvement centralisé
+                // ✅ Mouvement de stock (signé)
                 await MouvementStock.enregistrer({
                     id_produit: ligne.id_produit,
                     type_mouvement: 'ajustement',
-                    quantite: reelle,
+                    quantite: quantiteAjustement,
                     id_reference: id_ajustement,
                     type_reference: 'ajustement',
                     id_utilisateur,
                     notes: `Inventaire ${inventaire.reference} - Écart ${ecart}`
                 }, connection, id_utilisateur);
+
+                nbAjustements++;
             }
 
-            // Passer à 'termine'
+            // 4. Passer l'inventaire à 'termine'
             await connection.execute(
                 `UPDATE inventaires
                  SET statut = 'termine',
@@ -391,11 +396,16 @@ class Inventaire {
                      date_validation = NOW(),
                      valide_par = ?
                  WHERE id_inventaire = ? AND id_utilisateur = ?`,
-                [id_utilisateur ? String(id_utilisateur) : 'Système', id, id_utilisateur]
+                [valide_par_nom || 'Système', id, id_utilisateur]
             );
 
             await connection.commit();
-            return await this.findById(id, id_utilisateur);
+
+            return {
+                inventaire: await this.findById(id, id_utilisateur),
+                nb_ajustements: nbAjustements,
+                valeur_ecarts: valeurEcartTotal
+            };
 
         } catch (error) {
             await connection.rollback();
@@ -411,9 +421,7 @@ class Inventaire {
      * ============================================================
      */
     static async annuler(id, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour annuler');
-        }
+        if (!id_utilisateur) throw new Error('id_utilisateur requis pour annuler');
 
         const connection = await pool.getConnection();
         try {
@@ -427,9 +435,7 @@ class Inventaire {
             if (invRows.length === 0) throw new Error('Inventaire non trouvé');
 
             if (!['planifie', 'en_cours'].includes(invRows[0].statut)) {
-                throw new Error(
-                    `Impossible d'annuler un inventaire "${invRows[0].statut}"`
-                );
+                throw new Error(`Impossible d'annuler un inventaire "${invRows[0].statut}"`);
             }
 
             await connection.execute(
@@ -455,9 +461,7 @@ class Inventaire {
      * ============================================================
      */
     static async delete(id, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour delete');
-        }
+        if (!id_utilisateur) throw new Error('id_utilisateur requis pour delete');
 
         const connection = await pool.getConnection();
         try {
@@ -471,9 +475,7 @@ class Inventaire {
             if (invRows.length === 0) throw new Error('Inventaire non trouvé');
 
             if (!['planifie', 'annule'].includes(invRows[0].statut)) {
-                throw new Error(
-                    `Impossible de supprimer un inventaire "${invRows[0].statut}"`
-                );
+                throw new Error(`Impossible de supprimer un inventaire "${invRows[0].statut}"`);
             }
 
             await connection.execute(
@@ -495,13 +497,11 @@ class Inventaire {
 
     /**
      * ============================================================
-     * Récupérer un inventaire avec ses lignes
+     * ✅ Récupérer un inventaire avec ses lignes + résumé
      * ============================================================
      */
     static async findById(id, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour findById');
-        }
+        if (!id_utilisateur) throw new Error('id_utilisateur requis pour findById');
 
         const [rows] = await pool.execute(
             `SELECT i.*,
@@ -511,7 +511,7 @@ class Inventaire {
              LEFT JOIN emplacements e ON i.id_emplacement = e.id_emplacement
              LEFT JOIN utilisateurs u ON i.id_utilisateur = u.id_utilisateur
              WHERE i.id_inventaire = ?
-               AND i.id_utilisateur = ?`,           // ✅ ISOLATION
+               AND i.id_utilisateur = ?`,
             [id, id_utilisateur]
         );
         if (rows.length === 0) return null;
@@ -521,6 +521,7 @@ class Inventaire {
             `SELECT il.*,
                     p.nom AS produit_nom,
                     p.id_marque,
+                    p.prix_achat,
                     m.nom AS marque_nom,
                     p.id_unite,
                     un.symbole AS unite_symbole
@@ -534,6 +535,37 @@ class Inventaire {
         );
 
         inventaire.lignes = lignes;
+
+        // ✅ Résumé calculé
+        const nbLignes = lignes.length;
+        const nbSaisis = lignes.filter(l => l.date_scannage).length;
+        const lignesAvecEcart = lignes.filter(l => parseFloat(l.ecart) !== 0);
+        const nbEcarts = lignesAvecEcart.length;
+
+        let valeurEcartTotal = 0;
+        let valeurManquant = 0;
+        let valeurSurplus = 0;
+
+        lignesAvecEcart.forEach(l => {
+            const ecart = parseFloat(l.ecart) || 0;
+            const prix = parseFloat(l.prix_achat) || 0;
+            const valeur = Math.abs(ecart) * prix;
+            valeurEcartTotal += valeur;
+
+            if (ecart > 0) valeurManquant += valeur;
+            else valeurSurplus += valeur;
+        });
+
+        inventaire.resume = {
+            nb_lignes: nbLignes,
+            nb_saisis: nbSaisis,
+            nb_ecarts: nbEcarts,
+            pourcentage_saisi: nbLignes > 0 ? Math.round((nbSaisis / nbLignes) * 100) : 0,
+            valeur_ecart_total: valeurEcartTotal,
+            valeur_manquant: valeurManquant,
+            valeur_surplus: valeurSurplus,
+        };
+
         return inventaire;
     }
 
@@ -543,9 +575,7 @@ class Inventaire {
      * ============================================================
      */
     static async findAll(filters = {}, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour findAll');
-        }
+        if (!id_utilisateur) throw new Error('id_utilisateur requis pour findAll');
 
         let query = `
             SELECT i.*,
@@ -558,7 +588,7 @@ class Inventaire {
             FROM inventaires i
             LEFT JOIN emplacements e ON i.id_emplacement = e.id_emplacement
             LEFT JOIN utilisateurs u ON i.id_utilisateur = u.id_utilisateur
-            WHERE i.id_utilisateur = ?              -- ✅ ISOLATION
+            WHERE i.id_utilisateur = ?
         `;
         const params = [id_utilisateur];
 
@@ -601,13 +631,11 @@ class Inventaire {
 
     /**
      * ============================================================
-     * Statistiques des inventaires (par workspace)
+     * Statistiques des inventaires
      * ============================================================
      */
     static async getStats(id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour getStats');
-        }
+        if (!id_utilisateur) throw new Error('id_utilisateur requis pour getStats');
 
         const [rows] = await pool.execute(
             `SELECT
@@ -618,7 +646,7 @@ class Inventaire {
                 SUM(CASE WHEN statut = 'annule'   THEN 1 ELSE 0 END) AS annule,
                 SUM(CASE WHEN DATE(date_creation) = CURDATE() THEN 1 ELSE 0 END) AS aujourdhui
              FROM inventaires
-             WHERE id_utilisateur = ?`,             // ✅ ISOLATION
+             WHERE id_utilisateur = ?`,
             [id_utilisateur]
         );
 

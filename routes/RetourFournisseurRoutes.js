@@ -10,7 +10,7 @@ router.get('/stats', authenticateToken, RetourFournisseurController.getStats);
 
 // ==================== ROUTES D'EXPORT ====================
 router.get('/export', authenticateToken, RetourFournisseurController.export);
-
+ 
 // ==================== ROUTES PAR STATUT ====================
 router.get('/statut/:statut', authenticateToken, RetourFournisseurController.getByStatut);
 

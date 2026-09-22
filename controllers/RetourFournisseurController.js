@@ -2,12 +2,11 @@
 import RetourFournisseur from '../models/RetourFournisseur.js';
 import Fournisseur from '../models/Fournisseur.js';
 import Produit from '../models/Produit.js';
-import CommandeAchat from '../models/CommandeAchat.js';
-import Reception from '../models/Reception.js';
 
 class RetourFournisseurController {
     /**
      * ============================================================
+     * POST /api/retours-fournisseurs
      * Créer un nouveau retour fournisseur
      * ============================================================
      */
@@ -23,7 +22,7 @@ class RetourFournisseurController {
                 lignes
             } = req.body;
 
-            // 1. Validations
+            // ========== 1. VALIDATIONS DE BASE ==========
             if (!id_fournisseur) {
                 return res.status(400).json({
                     success: false,
@@ -42,14 +41,14 @@ class RetourFournisseurController {
                     message: 'Le motif de retour est obligatoire'
                 });
             }
-            if (!lignes || lignes.length === 0) {
+            if (!Array.isArray(lignes) || lignes.length === 0) {
                 return res.status(400).json({
                     success: false,
                     message: 'Au moins un produit est requis'
                 });
             }
 
-            // 2. ✅ Vérifier le fournisseur DANS le workspace
+            // ========== 2. VÉRIFIER LE FOURNISSEUR ==========
             const fournisseur = await Fournisseur.findById(id_fournisseur, req.workspaceId);
             if (!fournisseur) {
                 return res.status(404).json({
@@ -64,29 +63,9 @@ class RetourFournisseurController {
                 });
             }
 
-            // 3. ✅ Vérifier la commande DANS le workspace
-            if (id_commande_achat) {
-                const commande = await CommandeAchat.findById(id_commande_achat, req.workspaceId);
-                if (!commande) {
-                    return res.status(404).json({
-                        success: false,
-                        message: 'Commande d\'achat non trouvée'
-                    });
-                }
-            }
-
-            // 4. ✅ Vérifier la réception DANS le workspace
-            if (id_reception) {
-                const reception = await Reception.findById(id_reception, req.workspaceId);
-                if (!reception) {
-                    return res.status(404).json({
-                        success: false,
-                        message: 'Réception non trouvée'
-                    });
-                }
-            }
-
-            // 5. ✅ Vérifier les produits DANS le workspace
+            // ========== 3. VALIDATIONS BASIQUES DES PRODUITS ==========
+            //    (la règle métier "reçu du fournisseur" est appliquée
+            //     dans le modèle lors de la transaction)
             for (const ligne of lignes) {
                 const { id_produit, quantite } = ligne;
 
@@ -104,18 +83,9 @@ class RetourFournisseurController {
                         message: `La quantité pour "${produit.nom}" doit être positive`
                     });
                 }
-
-                const stockDisponible = parseFloat(produit.quantite_stock) || 0;
-                if (parseFloat(quantite) > stockDisponible) {
-                    return res.status(400).json({
-                        success: false,
-                        message: `Stock insuffisant pour "${produit.nom}". ` +
-                                `Disponible: ${stockDisponible}, Demandé: ${quantite}`
-                    });
-                }
             }
 
-            // 6. ✅ Créer avec id_utilisateur = req.workspaceId
+            // ========== 4. CRÉATION (dans le modèle avec toutes les règles) ==========
             const retour = await RetourFournisseur.create({
                 id_fournisseur,
                 id_commande_achat: id_commande_achat || null,
@@ -123,7 +93,7 @@ class RetourFournisseurController {
                 date_retour,
                 motif_retour,
                 notes: notes || null,
-                id_utilisateur: req.workspaceId,   // ← CORRIGÉ (avant : req.user.id)
+                id_utilisateur: req.workspaceId,
                 lignes
             });
 
@@ -135,17 +105,27 @@ class RetourFournisseurController {
 
         } catch (error) {
             console.error('❌ Create retour error:', error);
-            return res.status(500).json({
+
+            const isBusinessError = error.message && (
+                error.message.includes('non trouvé') ||
+                error.message.includes('obligatoire') ||
+                error.message.includes('positive') ||
+                error.message.includes('Aucune quantité') ||
+                error.message.includes('Quantité trop élevée') ||
+                error.message.includes('Stock insuffisant') ||
+                error.message.includes('Reçu net')
+            );
+
+            return res.status(isBusinessError ? 400 : 500).json({
                 success: false,
-                message: error.message || 'Erreur lors de la création du retour',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+                message: error.message || 'Erreur lors de la création du retour'
             });
         }
     }
 
     /**
      * ============================================================
-     * Récupérer tous les retours du workspace
+     * GET /api/retours-fournisseurs
      * ============================================================
      */
     static async getAll(req, res) {
@@ -177,7 +157,6 @@ class RetourFournisseurController {
             filters.limit = limitNum;
             filters.offset = offset;
 
-            // ✅ req.workspaceId en 2e argument
             const retours = await RetourFournisseur.findAll(filters, req.workspaceId);
 
             return res.status(200).json({
@@ -202,7 +181,7 @@ class RetourFournisseurController {
 
     /**
      * ============================================================
-     * Récupérer un retour par ID
+     * GET /api/retours-fournisseurs/:id
      * ============================================================
      */
     static async getById(req, res) {
@@ -216,7 +195,6 @@ class RetourFournisseurController {
                 });
             }
 
-            // ✅ req.workspaceId en 2e argument
             const retour = await RetourFournisseur.findById(parseInt(id), req.workspaceId);
 
             if (!retour) {
@@ -242,7 +220,7 @@ class RetourFournisseurController {
 
     /**
      * ============================================================
-     * Récupérer les retours par statut
+     * GET /api/retours-fournisseurs/statut/:statut
      * ============================================================
      */
     static async getByStatut(req, res) {
@@ -257,7 +235,6 @@ class RetourFournisseurController {
                 });
             }
 
-            // ✅ req.workspaceId en 2e argument
             const retours = await RetourFournisseur.findByStatut(statut, req.workspaceId);
 
             return res.status(200).json({
@@ -277,7 +254,7 @@ class RetourFournisseurController {
 
     /**
      * ============================================================
-     * Récupérer les retours d'un fournisseur
+     * GET /api/retours-fournisseurs/fournisseur/:id_fournisseur
      * ============================================================
      */
     static async getByFournisseur(req, res) {
@@ -291,7 +268,6 @@ class RetourFournisseurController {
                 });
             }
 
-            // ✅ req.workspaceId en 2e argument
             const retours = await RetourFournisseur.findByFournisseur(
                 parseInt(id_fournisseur),
                 req.workspaceId
@@ -314,7 +290,7 @@ class RetourFournisseurController {
 
     /**
      * ============================================================
-     * Mettre à jour le statut d'un retour
+     * PATCH /api/retours-fournisseurs/:id/statut
      * ============================================================
      */
     static async updateStatut(req, res) {
@@ -330,7 +306,6 @@ class RetourFournisseurController {
                 });
             }
 
-            // ✅ Vérifier existence DANS le workspace
             const retour = await RetourFournisseur.findById(id, req.workspaceId);
             if (!retour) {
                 return res.status(404).json({
@@ -339,7 +314,6 @@ class RetourFournisseurController {
                 });
             }
 
-            // ✅ req.workspaceId en 3e argument
             const updated = await RetourFournisseur.updateStatut(id, statut, req.workspaceId);
 
             if (!updated) {
@@ -366,14 +340,13 @@ class RetourFournisseurController {
 
     /**
      * ============================================================
-     * Annuler un retour (réintègre le stock)
+     * PATCH /api/retours-fournisseurs/:id/annuler
      * ============================================================
      */
     static async annuler(req, res) {
         try {
             const { id } = req.params;
 
-            // ✅ req.workspaceId en 2e argument
             const annule = await RetourFournisseur.annuler(id, req.workspaceId);
 
             if (!annule) {
@@ -400,14 +373,13 @@ class RetourFournisseurController {
 
     /**
      * ============================================================
-     * Supprimer un retour (seulement si en attente)
+     * DELETE /api/retours-fournisseurs/:id
      * ============================================================
      */
     static async delete(req, res) {
         try {
             const { id } = req.params;
 
-            // ✅ req.workspaceId en 2e argument
             const deleted = await RetourFournisseur.delete(id, req.workspaceId);
 
             if (!deleted) {
@@ -433,12 +405,11 @@ class RetourFournisseurController {
 
     /**
      * ============================================================
-     * Statistiques des retours fournisseurs (workspace)
+     * GET /api/retours-fournisseurs/stats
      * ============================================================
      */
     static async getStats(req, res) {
         try {
-            // ✅ req.workspaceId en argument
             const stats = await RetourFournisseur.getStats(req.workspaceId);
 
             return res.status(200).json({
@@ -457,12 +428,11 @@ class RetourFournisseurController {
 
     /**
      * ============================================================
-     * Exporter les retours fournisseurs du workspace
+     * GET /api/retours-fournisseurs/export
      * ============================================================
      */
     static async export(req, res) {
         try {
-            // ✅ req.workspaceId en 2e argument
             const retours = await RetourFournisseur.findAll(req.query, req.workspaceId);
 
             const exportData = retours.map(r => ({

@@ -110,4 +110,11 @@ router.delete(
     FournisseurController.delete
 );
 
+// ==================== PRODUITS REÇUS D'UN FOURNISSEUR ====================
+router.get(
+    '/:id/produits-recu',
+    authenticateToken,
+    FournisseurController.getProduitsRecus
+);
+
 export default router;

@@ -699,6 +699,110 @@ class Fournisseur {
             throw error;
         }
     }
+
+    /**
+ * ============================================================
+ * ✅ Récupérer les produits réellement reçus d'un fournisseur
+ *    avec la quantité nette retournable
+ * ============================================================
+ * Retourne pour chaque produit :
+ *  - quantite_recue        : total reçu (unité de base)
+ *  - quantite_deja_retournee : total déjà retourné
+ *  - quantite_nette_recue  : reçu - déjà retourné
+ *  - quantite_stock        : stock physique actuel
+ *  - quantite_max_retournable : MIN(stock, nette_recue)
+ *  - prix_achat            : prix unitaire actuel
+ *  - infos réception récente (id_reception, id_ligne_achat, id_commande_achat)
+ */
+static async getProduitsRecus(id_fournisseur, id_utilisateur) {
+    if (!id_utilisateur) {
+        throw new Error('id_utilisateur requis pour getProduitsRecus');
+    }
+
+    try {
+        const [rows] = await pool.execute(
+            `SELECT
+                p.id_produit,
+                p.nom,
+                p.quantite_stock,
+                p.prix_achat,
+                p.id_unite,
+                u.symbole AS unite_symbole,
+                u.nom AS unite_nom,
+
+                -- Quantité totale reçue du fournisseur (hors réceptions annulées)
+                COALESCE(SUM(rl.quantite_totale_base), 0) AS quantite_recue,
+
+                -- Quantité déjà retournée à ce fournisseur (hors retours annulés)
+                COALESCE((
+                    SELECT SUM(rl2.quantite)
+                    FROM retour_lignes rl2
+                    INNER JOIN retours_fournisseurs rf
+                        ON rl2.id_retour = rf.id_retour
+                    WHERE rl2.id_produit = p.id_produit
+                      AND rf.id_fournisseur = ?
+                      AND rf.id_utilisateur = ?
+                      AND rf.statut != 'annule'
+                ), 0) AS quantite_deja_retournee,
+
+                -- Dernière réception (pour traçabilité)
+                MAX(r.id_reception) AS id_reception_recente,
+                MAX(r.date_reception) AS derniere_reception,
+                MAX(ca.id_commande_achat) AS id_commande_achat_recente
+
+             FROM produits p
+             INNER JOIN reception_lignes rl ON rl.id_produit = p.id_produit
+             INNER JOIN receptions r ON rl.id_reception = r.id_reception
+             INNER JOIN commandes_achat ca ON r.id_commande_achat = ca.id_commande_achat
+             LEFT JOIN unites u ON p.id_unite = u.id_unite
+             WHERE r.id_utilisateur = ?
+               AND ca.id_fournisseur = ?
+               AND r.statut != 'annulee'
+               AND ca.statut != 'annulee'
+             GROUP BY p.id_produit, p.nom, p.quantite_stock, p.prix_achat,
+                      p.id_unite, u.symbole, u.nom
+             HAVING quantite_recue > 0`,
+            [
+                id_fournisseur, id_utilisateur,   // sous-requête retours
+                id_utilisateur, id_fournisseur    // WHERE principal
+            ]
+        );
+
+        // Enrichissement : calculer la quantité max retournable
+        return rows.map(r => {
+            const recue = parseFloat(r.quantite_recue) || 0;
+            const dejaRetournee = parseFloat(r.quantite_deja_retournee) || 0;
+            const stock = parseFloat(r.quantite_stock) || 0;
+
+            const netteRecue = Math.max(0, recue - dejaRetournee);
+            const maxRetournable = Math.min(stock, netteRecue);
+
+            return {
+                id_produit: r.id_produit,
+                nom: r.nom,
+                id_unite: r.id_unite,
+                unite_symbole: r.unite_symbole || '',
+                unite_nom: r.unite_nom || 'Unité',
+
+                quantite_stock: stock,
+                quantite_recue: recue,
+                quantite_deja_retournee: dejaRetournee,
+                quantite_nette_recue: netteRecue,
+                quantite_max_retournable: Math.floor(maxRetournable),
+
+                prix_achat: parseFloat(r.prix_achat) || 0,
+
+                id_reception_recente: r.id_reception_recente,
+                derniere_reception: r.derniere_reception,
+                id_commande_achat_recente: r.id_commande_achat_recente,
+            };
+        }).filter(p => p.quantite_max_retournable > 0);
+
+    } catch (error) {
+        console.error('❌ Error getting produits recus:', error);
+        throw error;
+    }
+}
 }
 
-export default Fournisseur;
+export default Fournisseur; 

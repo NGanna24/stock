@@ -608,6 +608,54 @@ class FournisseurController {
             });
         }
     }
+
+
+    /**
+ * ============================================================
+ * GET /api/fournisseurs/:id/produits-recu
+ * Récupérer les produits réellement reçus d'un fournisseur
+ * avec la quantité max retournable
+ * ============================================================
+ */
+static async getProduitsRecus(req, res) {
+    try {
+        const { id } = req.params;
+
+        if (!id || isNaN(id)) {
+            return res.status(400).json({
+                success: false,
+                message: 'ID fournisseur invalide'
+            });
+        }
+
+        // Vérifier le fournisseur dans le workspace
+        const fournisseur = await Fournisseur.findById(parseInt(id), req.workspaceId);
+        if (!fournisseur) {
+            return res.status(404).json({
+                success: false,
+                message: 'Fournisseur non trouvé'
+            });
+        }
+
+        const produits = await Fournisseur.getProduitsRecus(
+            parseInt(id),
+            req.workspaceId
+        );
+
+        return res.status(200).json({
+            success: true,
+            count: produits.length,
+            data: produits
+        });
+
+    } catch (error) {
+        console.error('❌ Get produits recus error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Erreur lors de la récupération des produits reçus'
+        });
+    }
+}
 }
 
 export default FournisseurController;

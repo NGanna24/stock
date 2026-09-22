@@ -1,7 +1,7 @@
 // routes/InventaireRoutes.js
 import express from 'express';
 import InventaireController from '../controllers/InventaireController.js';
-import { authenticateToken, authorize, requireRole } from '../middleware/middleware.js';
+import { authenticateToken } from '../middleware/middleware.js';
 
 const router = express.Router();
 
