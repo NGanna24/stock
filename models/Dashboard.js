@@ -6,10 +6,6 @@ class Dashboard {
      * ============================================================
      * KPIs GLOBAUX (par workspace)
      * ============================================================
-     * ✅ Corrigé :
-     *  - Utilise COALESCE(uv.prix_achat, p.prix_achat × quantite_base)
-     *  - Inclut tous les statuts sauf 'annulee'
-     *  - Renvoie produits_sans_cout_jour + produits_sans_cout
      */
     static async getKPIs(id_utilisateur) {
         if (!id_utilisateur) throw new Error('id_utilisateur requis pour getKPIs');
@@ -65,10 +61,6 @@ class Dashboard {
                 [id_utilisateur]
             );
 
-            // ============================================================
-            // ✅ Bénéfice du MOIS
-            // Logique : prix achat UV > prix achat produit × quantite_base
-            // ============================================================
             const [benefices] = await pool.execute(
                 `SELECT 
                     COALESCE(SUM(
@@ -98,9 +90,6 @@ class Dashboard {
                 [id_utilisateur]
             );
 
-            // ============================================================
-            // ✅ Bénéfice du JOUR
-            // ============================================================
             const [beneficesJour] = await pool.execute(
                 `SELECT 
                     COALESCE(SUM(
@@ -129,9 +118,6 @@ class Dashboard {
                 [id_utilisateur]
             );
 
-            // ============================================================
-            // ✅ Produits vendus SANS coût (mois en cours)
-            // ============================================================
             const [produitsSansCout] = await pool.execute(
                 `SELECT COUNT(DISTINCT p.id_produit) as total
                  FROM ligne_commande_vente lcv
@@ -146,9 +132,6 @@ class Dashboard {
                 [id_utilisateur]
             );
 
-            // ============================================================
-            // ✅ CA du mois (pour marge moyenne)
-            // ============================================================
             const [caMois] = await pool.execute(
                 `SELECT COALESCE(SUM(lcv.montant_total), 0) as total
                  FROM ligne_commande_vente lcv
@@ -175,7 +158,6 @@ class Dashboard {
                 ventes_jour: parseFloat(ventesJour[0].total) || 0,
                 factures_impayees: parseInt(facturesImpayees[0].total) || 0,
                 montant_impaye: parseFloat(montantImpaye[0].total) || 0,
-                // ✅ Bénéfices
                 benefices_mois: beneficeMois,
                 benefices_jour: beneficeJour,
                 marge_moyenne_pct: parseFloat(margeMoyennePct.toFixed(2)),
@@ -190,13 +172,8 @@ class Dashboard {
 
     /**
      * ============================================================
-     * ✅ BÉNÉFICES PAR JOUR (derniers N jours)
+     * BÉNÉFICES PAR JOUR
      * ============================================================
-     * Logique corrigée :
-     *  - Priorité : uv.prix_achat (unité de vente)
-     *  - Fallback : p.prix_achat × quantite_base (produit × conversion)
-     *  - Lignes sans prix → ignorées du bénéfice + comptées
-     *  - Statuts élargis : tout sauf 'annulee'
      */
     static async getBeneficesParJour(jours = 30, id_utilisateur) {
         if (!id_utilisateur) throw new Error('id_utilisateur requis pour getBeneficesParJour');
@@ -247,7 +224,6 @@ class Dashboard {
                 [id_utilisateur]
             );
 
-            // Remplir les jours manquants avec 0
             const result = [];
             const today = new Date();
             for (let i = joursInt - 1; i >= 0; i--) {
@@ -285,7 +261,7 @@ class Dashboard {
 
     /**
      * ============================================================
-     * VENTES PAR SEMAINE (4 dernières semaines)
+     * VENTES PAR SEMAINE
      * ============================================================
      */
     static async getVentesParSemaine(semaines = 4, id_utilisateur) {
@@ -326,7 +302,7 @@ class Dashboard {
 
     /**
      * ============================================================
-     * GRAPHIQUE DES VENTES DU JOUR (heure par heure)
+     * VENTES DU JOUR (heure par heure)
      * ============================================================
      */
     static async getVentesJourChart(id_utilisateur) {
@@ -366,7 +342,7 @@ class Dashboard {
 
     /**
      * ============================================================
-     * GRAPHIQUE DES VENTES (30 derniers jours)
+     * VENTES CHART (30 derniers jours)
      * ============================================================
      */
     static async getVentesChart(jours = 30, id_utilisateur) {
@@ -414,7 +390,7 @@ class Dashboard {
 
     /**
      * ============================================================
-     * TOP 5 PRODUITS VENDUS (30 derniers jours)
+     * ✅ TOP PRODUITS VENDUS (avec unités de vente)
      * ============================================================
      */
     static async getTopProduits(limit = 5, jours = 30, id_utilisateur) {
@@ -428,21 +404,55 @@ class Dashboard {
                 `SELECT
                     p.id_produit,
                     p.nom as produit_nom,
+                    p.id_unite,
+                    u.nom as unite_nom,
+                    u.symbole as unite_symbole,
                     m.nom as marque_nom,
                     SUM(lcv.quantite_totale_base) as total_vendu_base,
                     SUM(lcv.montant_total) as chiffre_affaires
                  FROM ligne_commande_vente lcv
                  JOIN produits p ON lcv.id_produit = p.id_produit
                  LEFT JOIN marques m ON p.id_marque = m.id_marque
+                 LEFT JOIN unites u ON p.id_unite = u.id_unite
                  JOIN commandes_vente cv ON lcv.id_commande = cv.id_commande
                  WHERE cv.date_commande >= DATE_SUB(CURDATE(), INTERVAL ${joursInt} DAY)
                    AND cv.statut != 'annulee'
                    AND cv.id_utilisateur = ?
-                 GROUP BY p.id_produit, p.nom, m.nom
+                 GROUP BY p.id_produit, p.nom, p.id_unite, u.nom, u.symbole, m.nom
                  ORDER BY total_vendu_base DESC
                  LIMIT ${limitInt}`,
                 [id_utilisateur]
             );
+
+            if (rows.length === 0) return [];
+
+            // ✅ Charger toutes les unités de vente des produits
+            const produitIds = rows.map(r => r.id_produit);
+            const placeholders = produitIds.map(() => '?').join(',');
+
+            const [allUnites] = await pool.query(
+                `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                        prix_vente, prix_achat, est_principal
+                 FROM unites_vente
+                 WHERE id_produit IN (${placeholders}) AND actif = TRUE
+                 ORDER BY est_principal DESC, quantite_base ASC`,
+                produitIds
+            );
+
+            const unitesParProduit = {};
+            allUnites.forEach(u => {
+                if (!unitesParProduit[u.id_produit]) {
+                    unitesParProduit[u.id_produit] = [];
+                }
+                unitesParProduit[u.id_produit].push({
+                    id_unite_vente: u.id_unite_vente,
+                    nom: u.nom,
+                    quantite_base: parseFloat(u.quantite_base) || 1,
+                    prix_vente: parseFloat(u.prix_vente) || 0,
+                    prix_achat: parseFloat(u.prix_achat) || 0,
+                    est_principal: u.est_principal === 1 || u.est_principal === true,
+                });
+            });
 
             return rows.map(r => {
                 const totalBase = parseFloat(r.total_vendu_base) || 0;
@@ -450,9 +460,12 @@ class Dashboard {
                     id_produit: r.id_produit,
                     produit_nom: r.produit_nom,
                     marque_nom: r.marque_nom,
+                    unite_nom: r.unite_nom,
+                    unite_symbole: r.unite_symbole,
                     total_vendu: totalBase,
                     total_vendu_base: totalBase,
-                    chiffre_affaires: parseFloat(r.chiffre_affaires) || 0
+                    chiffre_affaires: parseFloat(r.chiffre_affaires) || 0,
+                    unites_vente: unitesParProduit[r.id_produit] || [],
                 };
             });
         } catch (error) {
@@ -463,7 +476,7 @@ class Dashboard {
 
     /**
      * ============================================================
-     * ALERTES DE STOCK
+     * ✅ ALERTES DE STOCK (avec unités de vente)
      * ============================================================
      */
     static async getAlertes(id_utilisateur) {
@@ -471,34 +484,73 @@ class Dashboard {
 
         try {
             const [rupture] = await pool.execute(
-                `SELECT id_produit, nom, quantite_stock, quantite_minimale
-                 FROM produits
-                 WHERE (statut = 'rupture' OR quantite_stock <= 0) AND id_utilisateur = ?
-                 ORDER BY nom ASC`,
+                `SELECT p.id_produit, p.nom, p.quantite_stock, p.quantite_minimale,
+                        u.nom AS unite_nom, u.symbole AS unite_symbole
+                 FROM produits p
+                 LEFT JOIN unites u ON p.id_unite = u.id_unite
+                 WHERE (p.statut = 'rupture' OR p.quantite_stock <= 0) AND p.id_utilisateur = ?
+                 ORDER BY p.nom ASC`,
                 [id_utilisateur]
             );
 
             const [stockBas] = await pool.execute(
-                `SELECT id_produit, nom, quantite_stock, quantite_minimale
-                 FROM produits
-                 WHERE quantite_stock > 0 AND quantite_stock <= quantite_minimale AND id_utilisateur = ?
-                 ORDER BY quantite_stock ASC`,
+                `SELECT p.id_produit, p.nom, p.quantite_stock, p.quantite_minimale,
+                        u.nom AS unite_nom, u.symbole AS unite_symbole
+                 FROM produits p
+                 LEFT JOIN unites u ON p.id_unite = u.id_unite
+                 WHERE p.quantite_stock > 0 AND p.quantite_stock <= p.quantite_minimale
+                   AND p.id_utilisateur = ?
+                 ORDER BY p.quantite_stock ASC`,
                 [id_utilisateur]
             );
 
+            // ✅ Charger les unités de vente pour toutes les alertes
+            const allIds = [
+                ...rupture.map(r => r.id_produit),
+                ...stockBas.map(r => r.id_produit),
+            ];
+            const uniqueIds = [...new Set(allIds)];
+
+            let unitesParProduit = {};
+            if (uniqueIds.length > 0) {
+                const placeholders = uniqueIds.map(() => '?').join(',');
+                const [allUnites] = await pool.query(
+                    `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                            prix_vente, prix_achat, est_principal
+                     FROM unites_vente
+                     WHERE id_produit IN (${placeholders}) AND actif = TRUE
+                     ORDER BY est_principal DESC, quantite_base ASC`,
+                    uniqueIds
+                );
+
+                allUnites.forEach(u => {
+                    if (!unitesParProduit[u.id_produit]) {
+                        unitesParProduit[u.id_produit] = [];
+                    }
+                    unitesParProduit[u.id_produit].push({
+                        id_unite_vente: u.id_unite_vente,
+                        nom: u.nom,
+                        quantite_base: parseFloat(u.quantite_base) || 1,
+                        prix_vente: parseFloat(u.prix_vente) || 0,
+                        prix_achat: parseFloat(u.prix_achat) || 0,
+                        est_principal: u.est_principal === 1 || u.est_principal === true,
+                    });
+                });
+            }
+
+            const mapFn = (arr) => arr.map(r => ({
+                id_produit: r.id_produit,
+                produit_nom: r.nom,
+                quantite_stock: parseFloat(r.quantite_stock) || 0,
+                quantite_minimale: parseFloat(r.quantite_minimale) || 0,
+                unite_nom: r.unite_nom,
+                unite_symbole: r.unite_symbole,
+                unites_vente: unitesParProduit[r.id_produit] || [],
+            }));
+
             return {
-                rupture: rupture.map(r => ({
-                    id_produit: r.id_produit,
-                    produit_nom: r.nom,
-                    quantite_stock: parseFloat(r.quantite_stock) || 0,
-                    quantite_minimale: parseFloat(r.quantite_minimale) || 0
-                })),
-                stock_bas: stockBas.map(r => ({
-                    id_produit: r.id_produit,
-                    produit_nom: r.nom,
-                    quantite_stock: parseFloat(r.quantite_stock) || 0,
-                    quantite_minimale: parseFloat(r.quantite_minimale) || 0
-                })),
+                rupture: mapFn(rupture),
+                stock_bas: mapFn(stockBas),
                 total_rupture: rupture.length,
                 total_stock_bas: stockBas.length
             };
@@ -510,7 +562,7 @@ class Dashboard {
 
     /**
      * ============================================================
-     * DERNIERS MOUVEMENTS DE STOCK
+     * DERNIERS MOUVEMENTS (avec unités de vente)
      * ============================================================
      */
     static async getDerniersMouvements(limit = 5, id_utilisateur) {
@@ -524,8 +576,10 @@ class Dashboard {
                     m.id_mouvement, m.type_mouvement, m.quantite,
                     m.ancienne_quantite, m.nouvelle_quantite,
                     m.type_reference, m.id_reference, m.notes, m.date_mouvement,
+                    p.id_produit,
                     p.nom as produit_nom, ma.nom as marque_nom,
-                    u.symbole as unite_symbole, ut.fullname as utilisateur_nom,
+                    u.nom as unite_nom, u.symbole as unite_symbole,
+                    ut.fullname as utilisateur_nom,
                     DATE_FORMAT(m.date_mouvement, '%d/%m/%Y %H:%i') as date_formatee
                  FROM mouvements_stock m
                  LEFT JOIN produits p ON m.id_produit = p.id_produit
@@ -538,6 +592,38 @@ class Dashboard {
                 [id_utilisateur]
             );
 
+            if (rows.length === 0) return [];
+
+            // ✅ Charger les unités de vente des produits concernés
+            const produitIds = [...new Set(rows.map(r => r.id_produit).filter(Boolean))];
+            const placeholders = produitIds.map(() => '?').join(',');
+
+            let unitesParProduit = {};
+            if (produitIds.length > 0) {
+                const [allUnites] = await pool.query(
+                    `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                            prix_vente, prix_achat, est_principal
+                     FROM unites_vente
+                     WHERE id_produit IN (${placeholders}) AND actif = TRUE
+                     ORDER BY est_principal DESC, quantite_base ASC`,
+                    produitIds
+                );
+
+                allUnites.forEach(u => {
+                    if (!unitesParProduit[u.id_produit]) {
+                        unitesParProduit[u.id_produit] = [];
+                    }
+                    unitesParProduit[u.id_produit].push({
+                        id_unite_vente: u.id_unite_vente,
+                        nom: u.nom,
+                        quantite_base: parseFloat(u.quantite_base) || 1,
+                        prix_vente: parseFloat(u.prix_vente) || 0,
+                        prix_achat: parseFloat(u.prix_achat) || 0,
+                        est_principal: u.est_principal === 1 || u.est_principal === true,
+                    });
+                });
+            }
+
             return rows.map(r => ({
                 id_mouvement: r.id_mouvement,
                 type_mouvement: r.type_mouvement,
@@ -549,10 +635,13 @@ class Dashboard {
                 notes: r.notes,
                 date_mouvement: r.date_mouvement,
                 date_formatee: r.date_formatee,
+                id_produit: r.id_produit,
                 produit_nom: r.produit_nom,
                 marque_nom: r.marque_nom,
+                unite_nom: r.unite_nom,
                 unite_symbole: r.unite_symbole,
-                utilisateur_nom: r.utilisateur_nom
+                utilisateur_nom: r.utilisateur_nom,
+                unites_vente: unitesParProduit[r.id_produit] || [],
             }));
         } catch (error) {
             console.error('❌ Erreur getDerniersMouvements:', error);
@@ -644,7 +733,7 @@ class Dashboard {
 
     /**
      * ============================================================
-     * STATISTIQUES COMPLÈTES (tout en un)
+     * STATISTIQUES COMPLÈTES
      * ============================================================
      */
     static async getStatsCompletes(id_utilisateur) {

@@ -51,7 +51,7 @@ static async enregistrer(data, connection, id_utilisateur) {
     }
 
     const {
-        id_produit,
+        id_produit, 
         type_mouvement,
         quantite,
         id_reference = null,
@@ -156,17 +156,19 @@ static async enregistrer(data, connection, id_utilisateur) {
      * ============================================================
      */
 
-    static async findAll(filters = {}, id_utilisateur) {
+        static async findAll(filters = {}, id_utilisateur) {
         if (!id_utilisateur) {
             throw new Error('id_utilisateur requis pour findAll');
         }
 
+        // ✅ AJOUT : unite_nom + id_unite + unites_vente (pour StockSelector)
         let query = `
             SELECT m.*,
                    p.nom AS produit_nom,
                    p.id_marque,
                    ma.nom AS marque_nom,
                    p.id_unite,
+                   u.nom AS unite_nom,
                    u.symbole AS unite_symbole,
                    ut.fullname AS utilisateur_nom,
                    DATE_FORMAT(m.date_mouvement, '%d/%m/%Y %H:%i') AS date_mouvement_formatee
@@ -217,7 +219,42 @@ static async enregistrer(data, connection, id_utilisateur) {
         }
 
         const [rows] = await pool.query(query, params);
-        return rows;
+
+        // ✅ AJOUT : charger les unités de vente de chaque produit en 1 requête
+        if (rows.length === 0) return rows;
+
+        const produitIds = [...new Set(rows.map(r => r.id_produit))];
+        const placeholders = produitIds.map(() => '?').join(',');
+
+        const [unites] = await pool.query(
+            `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                    prix_vente, prix_achat, est_principal
+             FROM unites_vente
+             WHERE id_produit IN (${placeholders}) AND actif = TRUE
+             ORDER BY est_principal DESC, quantite_base ASC`,
+            produitIds
+        );
+
+        // Grouper par id_produit
+        const unitesParProduit = {};
+        for (const u of unites) {
+            if (!unitesParProduit[u.id_produit]) {
+                unitesParProduit[u.id_produit] = [];
+            }
+            unitesParProduit[u.id_produit].push({
+                ...u,
+                quantite_base: parseFloat(u.quantite_base) || 1,
+                prix_vente: parseFloat(u.prix_vente) || 0,
+                prix_achat: parseFloat(u.prix_achat) || 0,
+                est_principal: u.est_principal === 1 || u.est_principal === true,
+            });
+        }
+
+        // Attacher à chaque mouvement
+        return rows.map(r => ({
+            ...r,
+            unites_vente: unitesParProduit[r.id_produit] || [],
+        }));
     }
 
     static async findById(id, id_utilisateur) {

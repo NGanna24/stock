@@ -7,7 +7,7 @@ class BeneficeController {
      * RAPPORT BÉNÉFICES & MARGES COMPLET
      * ============================================================
      */
-    static async getBenefices(req, res) {
+    static async getBenefices(req, res) { 
         try {
             const { dateDebut, dateFin } = req.query;
 

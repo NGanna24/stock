@@ -198,7 +198,7 @@ class InventaireController {
                 success: false,
                 message: 'Erreur lors de la récupération des statistiques'
             });
-        }
+        } 
     }
 }
 

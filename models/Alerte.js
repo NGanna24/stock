@@ -6,7 +6,7 @@ class Alerte {
      * ============================================================
      * LISTE DES ALERTES DE STOCK (à partir des produits)
      * Calcule dynamiquement : rupture, stock bas, surstock
-     * ✅ Retourne unite_nom, unite_symbole + unité de vente principale
+     * ✅ Retourne unite_nom, unite_symbole + TOUTES les unités de vente
      * ============================================================
      */
     static async findAll(id_utilisateur) {
@@ -32,7 +32,6 @@ class Alerte {
                 u.symbole AS unite_symbole,
                 f.nom AS fournisseur_nom,
                 f.telephone AS fournisseur_telephone,
-                -- ✅ Unité de vente principale du produit (ex: carton)
                 uv_principal.nom AS unite_vente_nom,
                 uv_principal.quantite_base AS unite_vente_quantite_base,
                 uv_principal.prix_achat AS unite_vente_prix_achat,
@@ -57,7 +56,6 @@ class Alerte {
              LEFT JOIN marques m ON p.id_marque = m.id_marque
              LEFT JOIN unites u ON p.id_unite = u.id_unite
              LEFT JOIN fournisseurs f ON p.id_fournisseur = f.id_fournisseur
-             -- ✅ Sous-requête : unité de vente principale du produit
              LEFT JOIN unites_vente uv_principal
                 ON uv_principal.id_produit = p.id_produit
                 AND uv_principal.est_principal = TRUE
@@ -74,13 +72,42 @@ class Alerte {
             [id_utilisateur]
         );
 
+        if (rows.length === 0) return [];
+
+        // ✅ Charger TOUTES les unités de vente des produits en alerte
+        const produitIds = rows.map(r => r.id_produit);
+        const placeholders = produitIds.map(() => '?').join(',');
+
+        const [allUnites] = await pool.execute(
+            `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                    prix_vente, prix_achat, est_principal
+             FROM unites_vente
+             WHERE id_produit IN (${placeholders}) AND actif = TRUE
+             ORDER BY est_principal DESC, quantite_base ASC`,
+            produitIds
+        );
+
+        const unitesParProduit = {};
+        allUnites.forEach(u => {
+            if (!unitesParProduit[u.id_produit]) {
+                unitesParProduit[u.id_produit] = [];
+            }
+            unitesParProduit[u.id_produit].push({
+                id_unite_vente: u.id_unite_vente,
+                nom: u.nom,
+                quantite_base: parseFloat(u.quantite_base) || 1,
+                prix_vente: parseFloat(u.prix_vente) || 0,
+                prix_achat: parseFloat(u.prix_achat) || 0,
+                est_principal: u.est_principal === 1 || u.est_principal === true,
+            });
+        });
+
         return rows.map(r => {
             const stock = parseFloat(r.quantite_stock) || 0;
             const min = parseFloat(r.quantite_minimale) || 0;
             const max = parseFloat(r.quantite_maximale) || 0;
             const prixAchat = parseFloat(r.prix_achat) || 0;
 
-            // Objectif de réapprovisionnement (max, sinon min*2, sinon 10)
             const objectif = max > 0 ? max : (min > 0 ? min * 2 : 10);
             const qteACmd = (r.type_alerte === 'rupture' || r.type_alerte === 'stock_bas')
                 ? Math.max(0, objectif - stock)
@@ -94,11 +121,12 @@ class Alerte {
                 prix_achat: prixAchat,
                 quantite_a_commander: qteACmd,
                 valeur_manque: prixAchat * qteACmd,
-                // ✅ Conversion en unités de vente
                 quantite_a_commander_unite_vente:
                     r.unite_vente_quantite_base > 0
                         ? Math.ceil(qteACmd / parseFloat(r.unite_vente_quantite_base))
-                        : null
+                        : null,
+                // ✅ Toutes les unités de vente du produit
+                unites_vente: unitesParProduit[r.id_produit] || [],
             };
         });
     }
@@ -184,7 +212,7 @@ class Alerte {
 
     /**
      * ============================================================
-     * ALERTES PAR FOURNISSEUR (pour regroupement de commandes)
+     * ALERTES PAR FOURNISSEUR
      * ============================================================
      */
     static async getAlertesParFournisseur(id_utilisateur) {
@@ -272,11 +300,41 @@ class Alerte {
             [id_utilisateur]
         );
 
+        if (rows.length === 0) return [];
+
+        const produitIds = rows.map(r => r.id_produit);
+        const placeholders = produitIds.map(() => '?').join(',');
+
+        const [allUnites] = await pool.execute(
+            `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                    prix_vente, prix_achat, est_principal
+             FROM unites_vente
+             WHERE id_produit IN (${placeholders}) AND actif = TRUE
+             ORDER BY est_principal DESC, quantite_base ASC`,
+            produitIds
+        );
+
+        const unitesParProduit = {};
+        allUnites.forEach(u => {
+            if (!unitesParProduit[u.id_produit]) {
+                unitesParProduit[u.id_produit] = [];
+            }
+            unitesParProduit[u.id_produit].push({
+                id_unite_vente: u.id_unite_vente,
+                nom: u.nom,
+                quantite_base: parseFloat(u.quantite_base) || 1,
+                prix_vente: parseFloat(u.prix_vente) || 0,
+                prix_achat: parseFloat(u.prix_achat) || 0,
+                est_principal: u.est_principal === 1 || u.est_principal === true,
+            });
+        });
+
         return rows.map(r => ({
             ...r,
             quantite_stock: parseFloat(r.quantite_stock) || 0,
             quantite_minimale: parseFloat(r.quantite_minimale) || 0,
-            prix_achat: parseFloat(r.prix_achat) || 0
+            prix_achat: parseFloat(r.prix_achat) || 0,
+            unites_vente: unitesParProduit[r.id_produit] || [],
         }));
     }
 
@@ -322,6 +380,35 @@ class Alerte {
             [id_utilisateur]
         );
 
+        if (rows.length === 0) return [];
+
+        const produitIds = rows.map(r => r.id_produit);
+        const placeholders = produitIds.map(() => '?').join(',');
+
+        const [allUnites] = await pool.execute(
+            `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                    prix_vente, prix_achat, est_principal
+             FROM unites_vente
+             WHERE id_produit IN (${placeholders}) AND actif = TRUE
+             ORDER BY est_principal DESC, quantite_base ASC`,
+            produitIds
+        );
+
+        const unitesParProduit = {};
+        allUnites.forEach(u => {
+            if (!unitesParProduit[u.id_produit]) {
+                unitesParProduit[u.id_produit] = [];
+            }
+            unitesParProduit[u.id_produit].push({
+                id_unite_vente: u.id_unite_vente,
+                nom: u.nom,
+                quantite_base: parseFloat(u.quantite_base) || 1,
+                prix_vente: parseFloat(u.prix_vente) || 0,
+                prix_achat: parseFloat(u.prix_achat) || 0,
+                est_principal: u.est_principal === 1 || u.est_principal === true,
+            });
+        });
+
         return rows.map(r => ({
             ...r,
             quantite_stock: parseFloat(r.quantite_stock) || 0,
@@ -330,7 +417,8 @@ class Alerte {
             prix_achat: parseFloat(r.prix_achat) || 0,
             pourcentage_restant: r.quantite_minimale > 0
                 ? ((parseFloat(r.quantite_stock) / parseFloat(r.quantite_minimale)) * 100)
-                : 0
+                : 0,
+            unites_vente: unitesParProduit[r.id_produit] || [],
         }));
     }
 }

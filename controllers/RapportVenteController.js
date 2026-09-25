@@ -4,7 +4,7 @@ import RapportVente from '../models/RapportVente.js';
 class RapportVenteController {
     /**
      * ============================================================
-     * RAPPORT DES VENTES COMPLET
+     * RAPPORT DES VENTES COMPLET 
      * ============================================================
      */
     static async getRapportVentes(req, res) {

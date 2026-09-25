@@ -7,7 +7,7 @@ class DashboardController {
             const stats = await Dashboard.getStatsCompletes(req.workspaceId);
             res.status(200).json({ success: true, data: stats });
         } catch (error) {
-            console.error('❌ Erreur getStats dashboard:', error);
+            console.error('❌ Erreur getStats dashboard:', error); 
             res.status(500).json({
                 success: false,
                 message: 'Erreur lors de la récupération des statistiques',

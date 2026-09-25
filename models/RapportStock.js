@@ -28,6 +28,7 @@ class RapportStock {
                 c.nom AS categorie_nom,
                 m.nom AS marque_nom,
                 md.nom AS modele_nom,
+                u.nom AS unite_nom,
                 u.symbole AS unite_symbole,
                 f.nom AS fournisseur_nom,
                 (p.quantite_stock * p.prix_achat) AS valeur_stock,
@@ -48,6 +49,36 @@ class RapportStock {
             [id_utilisateur]
         );
 
+        if (rows.length === 0) return [];
+
+        // ✅ Charger les unités de vente de tous les produits en 1 requête
+        const produitIds = rows.map(r => r.id_produit);
+        const placeholders = produitIds.map(() => '?').join(',');
+
+        const [allUnites] = await pool.execute(
+            `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                    prix_vente, prix_achat, est_principal
+             FROM unites_vente
+             WHERE id_produit IN (${placeholders}) AND actif = TRUE
+             ORDER BY est_principal DESC, quantite_base ASC`,
+            produitIds
+        );
+
+        const unitesParProduit = {};
+        allUnites.forEach(u => {
+            if (!unitesParProduit[u.id_produit]) {
+                unitesParProduit[u.id_produit] = [];
+            }
+            unitesParProduit[u.id_produit].push({
+                id_unite_vente: u.id_unite_vente,
+                nom: u.nom,
+                quantite_base: parseFloat(u.quantite_base) || 1,
+                prix_vente: parseFloat(u.prix_vente) || 0,
+                prix_achat: parseFloat(u.prix_achat) || 0,
+                est_principal: u.est_principal === 1 || u.est_principal === true,
+            });
+        });
+
         return rows.map(r => ({
             ...r,
             quantite_stock: parseFloat(r.quantite_stock) || 0,
@@ -55,7 +86,8 @@ class RapportStock {
             quantite_maximale: parseFloat(r.quantite_maximale) || 0,
             prix_achat: parseFloat(r.prix_achat) || 0,
             prix_vente: parseFloat(r.prix_vente) || 0,
-            valeur_stock: parseFloat(r.valeur_stock) || 0
+            valeur_stock: parseFloat(r.valeur_stock) || 0,
+            unites_vente: unitesParProduit[r.id_produit] || [],
         }));
     }
 
@@ -176,38 +208,83 @@ class RapportStock {
         }
 
         const [rupture] = await pool.execute(
-            `SELECT id_produit, nom AS produit_nom, quantite_stock, quantite_minimale
-             FROM produits
-             WHERE id_utilisateur = ? AND quantite_stock <= 0
-             ORDER BY nom ASC`,
+            `SELECT p.id_produit, p.nom AS produit_nom,
+                    p.quantite_stock, p.quantite_minimale,
+                    u.nom AS unite_nom, u.symbole AS unite_symbole
+             FROM produits p
+             LEFT JOIN unites u ON p.id_unite = u.id_unite
+             WHERE p.id_utilisateur = ? AND p.quantite_stock <= 0
+             ORDER BY p.nom ASC`,
             [id_utilisateur]
         );
 
         const [stockBas] = await pool.execute(
-            `SELECT id_produit, nom AS produit_nom, quantite_stock, quantite_minimale
-             FROM produits
-             WHERE id_utilisateur = ?
-               AND quantite_stock > 0
-               AND quantite_stock <= quantite_minimale
-             ORDER BY quantite_stock ASC`,
+            `SELECT p.id_produit, p.nom AS produit_nom,
+                    p.quantite_stock, p.quantite_minimale,
+                    u.nom AS unite_nom, u.symbole AS unite_symbole
+             FROM produits p
+             LEFT JOIN unites u ON p.id_unite = u.id_unite
+             WHERE p.id_utilisateur = ?
+               AND p.quantite_stock > 0
+               AND p.quantite_stock <= p.quantite_minimale
+             ORDER BY p.quantite_stock ASC`,
             [id_utilisateur]
         );
 
         const [surstock] = await pool.execute(
-            `SELECT id_produit, nom AS produit_nom, quantite_stock, quantite_maximale
-             FROM produits
-             WHERE id_utilisateur = ?
-               AND quantite_maximale > 0
-               AND quantite_stock >= quantite_maximale
-             ORDER BY quantite_stock DESC`,
+            `SELECT p.id_produit, p.nom AS produit_nom,
+                    p.quantite_stock, p.quantite_maximale,
+                    u.nom AS unite_nom, u.symbole AS unite_symbole
+             FROM produits p
+             LEFT JOIN unites u ON p.id_unite = u.id_unite
+             WHERE p.id_utilisateur = ?
+               AND p.quantite_maximale > 0
+               AND p.quantite_stock >= p.quantite_maximale
+             ORDER BY p.quantite_stock DESC`,
             [id_utilisateur]
         );
+
+        // ✅ Charger TOUTES les unités de vente pour tous les produits en alerte
+        const allIds = [
+            ...rupture.map(r => r.id_produit),
+            ...stockBas.map(r => r.id_produit),
+            ...surstock.map(r => r.id_produit),
+        ];
+        const uniqueIds = [...new Set(allIds)];
+
+        let unitesParProduit = {};
+        if (uniqueIds.length > 0) {
+            const placeholders = uniqueIds.map(() => '?').join(',');
+            const [allUnites] = await pool.execute(
+                `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                        prix_vente, prix_achat, est_principal
+                 FROM unites_vente
+                 WHERE id_produit IN (${placeholders}) AND actif = TRUE
+                 ORDER BY est_principal DESC, quantite_base ASC`,
+                uniqueIds
+            );
+
+            allUnites.forEach(u => {
+                if (!unitesParProduit[u.id_produit]) {
+                    unitesParProduit[u.id_produit] = [];
+                }
+                unitesParProduit[u.id_produit].push({
+                    id_unite_vente: u.id_unite_vente,
+                    nom: u.nom,
+                    quantite_base: parseFloat(u.quantite_base) || 1,
+                    prix_vente: parseFloat(u.prix_vente) || 0,
+                    prix_achat: parseFloat(u.prix_achat) || 0,
+                    est_principal: u.est_principal === 1 || u.est_principal === true,
+                });
+            });
+        }
 
         const map = (arr) => arr.map(r => ({
             ...r,
             quantite_stock: parseFloat(r.quantite_stock) || 0,
             quantite_minimale: parseFloat(r.quantite_minimale) || 0,
-            quantite_maximale: parseFloat(r.quantite_maximale) || 0
+            quantite_maximale: parseFloat(r.quantite_maximale) || 0,
+            unites_vente: unitesParProduit[r.id_produit] || [],
         }));
 
         return {
@@ -219,7 +296,7 @@ class RapportStock {
 
     /**
      * ============================================================
-     * TOP VALEUR STOCK (produits qui immobilisent le plus de capital)
+     * TOP VALEUR STOCK
      * ============================================================
      */
     static async getTopValeurStock(id_utilisateur, limit = 10) {
@@ -278,8 +355,10 @@ class RapportStock {
                 m.type_reference,
                 m.notes,
                 m.date_mouvement,
+                p.id_produit,
                 p.nom AS produit_nom,
                 ma.nom AS marque_nom,
+                u.nom AS unite_nom,
                 u.symbole AS unite_symbole,
                 DATE_FORMAT(m.date_mouvement, '%d/%m/%Y %H:%i') AS date_formatee
              FROM mouvements_stock m
@@ -292,11 +371,44 @@ class RapportStock {
             [id_utilisateur, dateDebut, dateFin]
         );
 
+        if (rows.length === 0) return [];
+
+        // ✅ Charger toutes les unités de vente des produits concernés
+        const produitIds = [...new Set(rows.map(r => r.id_produit).filter(Boolean))];
+        const placeholders = produitIds.map(() => '?').join(',');
+
+        let unitesParProduit = {};
+        if (produitIds.length > 0) {
+            const [allUnites] = await pool.execute(
+                `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                        prix_vente, prix_achat, est_principal
+                 FROM unites_vente
+                 WHERE id_produit IN (${placeholders}) AND actif = TRUE
+                 ORDER BY est_principal DESC, quantite_base ASC`,
+                produitIds
+            );
+
+            allUnites.forEach(u => {
+                if (!unitesParProduit[u.id_produit]) {
+                    unitesParProduit[u.id_produit] = [];
+                }
+                unitesParProduit[u.id_produit].push({
+                    id_unite_vente: u.id_unite_vente,
+                    nom: u.nom,
+                    quantite_base: parseFloat(u.quantite_base) || 1,
+                    prix_vente: parseFloat(u.prix_vente) || 0,
+                    prix_achat: parseFloat(u.prix_achat) || 0,
+                    est_principal: u.est_principal === 1 || u.est_principal === true,
+                });
+            });
+        }
+
         return rows.map(r => ({
             ...r,
             quantite: parseFloat(r.quantite) || 0,
             ancienne_quantite: parseFloat(r.ancienne_quantite) || 0,
-            nouvelle_quantite: parseFloat(r.nouvelle_quantite) || 0
+            nouvelle_quantite: parseFloat(r.nouvelle_quantite) || 0,
+            unites_vente: unitesParProduit[r.id_produit] || [],
         }));
     }
 }

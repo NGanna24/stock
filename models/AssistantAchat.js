@@ -16,12 +16,10 @@ class AssistantAchat {
 
     /**
      * ============================================================
-     * ✅ GÉNÉRER LA PROPOSITION DE RÉAPPROVISIONNEMENT (v3)
+     * ✅ GÉNÉRER LA PROPOSITION DE RÉAPPROVISIONNEMENT (v4)
      * ============================================================
-     * ⚠️ CORRECTION MAJEURE : tient compte du STOCK EN COMMANDE
-     *    → stock_prévisionnel = quantite_stock + en_commande
-     *    → évite de recommander ce qui est déjà en cours
-     * ⚠️ GARANTIE : quantite_proposee_uv >= 1 (jamais 0)
+     * ⚠️ NOUVEAU : renvoie TOUTES les unités de vente de chaque produit
+     *              (pour permettre le choix via StockSelector)
      */
     static async getProposition(id_utilisateur, options = {}) {
         if (!id_utilisateur) {
@@ -80,19 +78,11 @@ class AssistantAchat {
                 f.nom AS fournisseur_nom,
                 f.telephone AS fournisseur_telephone,
                 f.email AS fournisseur_email,
-                f.ville AS fournisseur_ville,
-                uv.id_unite_vente AS uv_id,
-                uv.nom AS uv_nom,
-                uv.quantite_base AS uv_quantite_base,
-                uv.prix_achat AS uv_prix_achat
+                f.ville AS fournisseur_ville
              FROM produits p
              LEFT JOIN marques m ON p.id_marque = m.id_marque
              LEFT JOIN unites u ON p.id_unite = u.id_unite
              LEFT JOIN fournisseurs f ON p.id_fournisseur = f.id_fournisseur
-             LEFT JOIN unites_vente uv
-                ON uv.id_produit = p.id_produit
-                AND uv.est_principal = TRUE
-                AND uv.actif = TRUE
              WHERE p.id_utilisateur = ?
              ORDER BY f.nom ASC, p.nom ASC`,
             [id_utilisateur]
@@ -121,6 +111,39 @@ class AssistantAchat {
                 total_estime: 0,
                 produits: [],
             };
+        }
+
+        // ============================================================
+        // 🔑 ÉTAPE 3.5 : Charger TOUTES les unités de vente
+        // ============================================================
+        const idsProduitsPourUnites = produitsAFiltre.map(p => p.id_produit);
+        const placeholdersUnites = idsProduitsPourUnites.map(() => '?').join(',');
+
+        let unitesParProduit = {};
+        if (idsProduitsPourUnites.length > 0) {
+            const [allUnites] = await pool.execute(
+                `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                        prix_vente, prix_achat, est_principal
+                 FROM unites_vente
+                 WHERE id_produit IN (${placeholdersUnites})
+                   AND actif = TRUE
+                 ORDER BY est_principal DESC, quantite_base ASC`,
+                idsProduitsPourUnites
+            );
+
+            allUnites.forEach(u => {
+                if (!unitesParProduit[u.id_produit]) {
+                    unitesParProduit[u.id_produit] = [];
+                }
+                unitesParProduit[u.id_produit].push({
+                    id_unite_vente: u.id_unite_vente,
+                    nom: u.nom,
+                    quantite_base: parseFloat(u.quantite_base) || 1,
+                    prix_vente: parseFloat(u.prix_vente) || 0,
+                    prix_achat: parseFloat(u.prix_achat) || 0,
+                    est_principal: u.est_principal === 1 || u.est_principal === true,
+                });
+            });
         }
 
         // ============================================================
@@ -181,22 +204,30 @@ class AssistantAchat {
                 besoinBase = Math.max(0, min - stockPrevisionnel);
             }
 
-            // ✅ FIX 1a : garantir au moins 1 unité de base
             const besoinArrondi = Math.max(1, Math.ceil(besoinBase));
 
-            // --- Unité de vente proposée ---
-            const uv = p.uv_id
+            // --- Unités de vente du produit ---
+            const unitesProduit = unitesParProduit[p.id_produit] || [];
+
+            // L'unité proposée = l'unité principale, sinon la 1ère non-base
+            const uvPrincipale =
+                unitesProduit.find(u => u.est_principal) ||
+                unitesProduit[0] ||
+                null;
+
+            const uv = uvPrincipale
                 ? {
-                    id_unite_vente: p.uv_id,
-                    nom: p.uv_nom,
-                    quantite_base: parseFloat(p.uv_quantite_base) || 1,
-                    prix_achat: p.uv_prix_achat !== null ? parseFloat(p.uv_prix_achat) : null,
+                    id_unite_vente: uvPrincipale.id_unite_vente,
+                    nom: uvPrincipale.nom,
+                    quantite_base: uvPrincipale.quantite_base,
+                    prix_achat: uvPrincipale.prix_achat !== null
+                        ? uvPrincipale.prix_achat
+                        : null,
                 }
                 : null;
 
             const qteBaseParUV = uv?.quantite_base || 1;
 
-            // ✅ FIX 1b : garantir au moins 1 unité de vente
             const qteUV = Math.max(1, Math.ceil(besoinArrondi / qteBaseParUV));
             const qteTotaleBase = qteUV * qteBaseParUV;
 
@@ -222,6 +253,10 @@ class AssistantAchat {
 
                 besoin_base: besoinArrondi,
 
+                // ✅ Toutes les unités de vente du produit
+                unites_vente: unitesProduit,
+
+                // ✅ Unité principale (pour pré-remplir)
                 unite_proposee: uv
                     ? {
                         id_unite_vente: uv.id_unite_vente,
@@ -336,7 +371,6 @@ class AssistantAchat {
                     continue;
                 }
 
-                // ✅ FIX 2 : garantir quantité >= 1
                 const lignesValides = groupe.lignes
                     .filter(l => {
                         const q = Math.max(1, parseInt(l.quantite, 10) || 1);

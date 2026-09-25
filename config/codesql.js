@@ -451,7 +451,7 @@ CREATE TABLE IF NOT EXISTS ligne_commande_vente (
     id_produit INT NOT NULL,
     id_unite_vente INT,
     nom_unite_vente VARCHAR(50) DEFAULT 'Unité',
-    quantite_base DECIMAL(15, 2) DEFAULT 1,
+    quantite_base DECIMAL(15, 2) DEFAULT 1, 
     quantite DECIMAL(15, 2) NOT NULL,
     prix_vente DECIMAL(15, 2) NOT NULL,
     remise DECIMAL(15, 2) DEFAULT 0.00,

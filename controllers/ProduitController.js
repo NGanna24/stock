@@ -820,7 +820,7 @@ try {
         p.marque_nom || '',
         p.modele_nom || '',
         p.unite_nom || '',
-        p.prix_achat || 0,
+        p.prix_achat || 0, 
         p.prix_vente || 0,
         p.quantite_stock || 0,
         p.quantite_minimale || 0,

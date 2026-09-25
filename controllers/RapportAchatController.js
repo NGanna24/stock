@@ -7,7 +7,7 @@ class RapportAchatController {
      * RAPPORT DES ACHATS COMPLET
      * ============================================================
      */
-    static async getRapportAchats(req, res) {
+    static async getRapportAchats(req, res) { 
         try {
             const { dateDebut, dateFin } = req.query;
 

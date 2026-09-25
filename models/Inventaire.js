@@ -110,7 +110,6 @@ class Inventaire {
                 throw new Error(`Impossible de démarrer un inventaire avec statut "${inventaire.statut}"`);
             }
 
-            // Récupérer les produits du workspace
             let produitsQuery = `
                 SELECT id_produit, nom, quantite_stock, emplacement
                 FROM produits
@@ -134,7 +133,6 @@ class Inventaire {
                 throw new Error('Aucun produit à inventorier');
             }
 
-            // Insérer les lignes (snapshot)
             for (const p of produits) {
                 await connection.execute(
                     `INSERT INTO inventaire_lignes (
@@ -287,10 +285,7 @@ class Inventaire {
 
     /**
      * ============================================================
-     * ✅ VALIDER un inventaire (VERSION CORRIGÉE)
-     *    - Applique le stock réel aux produits
-     *    - Crée les ajustements signés
-     *    - Tracé dans mouvements_stock
+     * ✅ VALIDER un inventaire
      * ============================================================
      */
     static async valider(id, id_utilisateur, valide_par_nom = null) {
@@ -300,7 +295,6 @@ class Inventaire {
         try {
             await connection.beginTransaction();
 
-            // 1. Vérifier l'inventaire
             const [invRows] = await connection.execute(
                 `SELECT * FROM inventaires
                  WHERE id_inventaire = ? AND id_utilisateur = ?
@@ -314,7 +308,6 @@ class Inventaire {
                 throw new Error(`Impossible de valider un inventaire au statut "${inventaire.statut}"`);
             }
 
-            // 2. Récupérer TOUTES les lignes (pas seulement les écarts)
             const [lignes] = await connection.execute(
                 `SELECT * FROM inventaire_lignes WHERE id_inventaire = ?`,
                 [id]
@@ -323,13 +316,11 @@ class Inventaire {
             let nbAjustements = 0;
             let valeurEcartTotal = 0;
 
-            // 3. Pour chaque ligne avec écart → ajustement + mise à jour stock
             for (const ligne of lignes) {
                 const theorique = parseFloat(ligne.quantite_theorique) || 0;
                 const reelle = parseFloat(ligne.quantite_reelle) || 0;
                 const ecart = theorique - reelle;
 
-                // ✅ Mise à jour du stock MÊME SI pas d'écart (pour être sûr)
                 await connection.execute(
                     `UPDATE produits
                      SET quantite_stock = ?,
@@ -338,15 +329,10 @@ class Inventaire {
                     [reelle, reelle, ligne.id_produit, id_utilisateur]
                 );
 
-                // Si pas d'écart, on ne crée pas d'ajustement (pas nécessaire)
                 if (ecart === 0) continue;
 
-                // ✅ Quantité d'ajustement SIGNÉE
-                // ecart > 0 → manquant (sortie)
-                // ecart < 0 → surplus (entrée)
-                const quantiteAjustement = -ecart; // on applique la correction
+                const quantiteAjustement = -ecart;
 
-                // Récupérer le prix d'achat pour valoriser
                 const [prodRows] = await connection.execute(
                     `SELECT prix_achat FROM produits WHERE id_produit = ?`,
                     [ligne.id_produit]
@@ -354,7 +340,6 @@ class Inventaire {
                 const prixAchat = parseFloat(prodRows[0]?.prix_achat) || 0;
                 valeurEcartTotal += Math.abs(ecart) * prixAchat;
 
-                // Créer l'ajustement
                 const refAjust = `AJU-INV-${id}-${ligne.id_ligne}`;
                 const [ajustResult] = await connection.execute(
                     `INSERT INTO ajustements_stock (
@@ -366,7 +351,7 @@ class Inventaire {
                         id_utilisateur,
                         refAjust,
                         ligne.id_produit,
-                        quantiteAjustement,  // ✅ signé
+                        quantiteAjustement,
                         theorique,
                         reelle,
                         `Ajustement suite à inventaire ${inventaire.reference} (écart: ${ecart})`
@@ -374,7 +359,6 @@ class Inventaire {
                 );
                 const id_ajustement = ajustResult.insertId;
 
-                // ✅ Mouvement de stock (signé)
                 await MouvementStock.enregistrer({
                     id_produit: ligne.id_produit,
                     type_mouvement: 'ajustement',
@@ -388,7 +372,6 @@ class Inventaire {
                 nbAjustements++;
             }
 
-            // 4. Passer l'inventaire à 'termine'
             await connection.execute(
                 `UPDATE inventaires
                  SET statut = 'termine',
@@ -497,7 +480,8 @@ class Inventaire {
 
     /**
      * ============================================================
-     * ✅ Récupérer un inventaire avec ses lignes + résumé
+     * ✅ Récupérer un inventaire avec ses lignes + unités de vente
+     *    (VERSION CORRIGÉE avec TOUTES les unités de vente)
      * ============================================================
      */
     static async findById(id, id_utilisateur) {
@@ -517,6 +501,7 @@ class Inventaire {
         if (rows.length === 0) return null;
         const inventaire = rows[0];
 
+        // ✅ 1. Charger les lignes de base (sans les unités de vente)
         const [lignes] = await pool.execute(
             `SELECT il.*,
                     p.nom AS produit_nom,
@@ -524,6 +509,7 @@ class Inventaire {
                     p.prix_achat,
                     m.nom AS marque_nom,
                     p.id_unite,
+                    un.nom AS unite_nom,
                     un.symbole AS unite_symbole
              FROM inventaire_lignes il
              LEFT JOIN produits p ON il.id_produit = p.id_produit
@@ -534,9 +520,43 @@ class Inventaire {
             [id]
         );
 
-        inventaire.lignes = lignes;
+        // ✅ 2. Charger TOUTES les unités de vente en UNE requête
+        let unitesParProduit = {};
+        if (lignes.length > 0) {
+            const produitIds = [...new Set(lignes.map(l => l.id_produit))];
+            const placeholders = produitIds.map(() => '?').join(',');
 
-        // ✅ Résumé calculé
+            const [allUnites] = await pool.execute(
+                `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                        prix_vente, prix_achat, est_principal
+                 FROM unites_vente
+                 WHERE id_produit IN (${placeholders}) AND actif = TRUE
+                 ORDER BY est_principal DESC, quantite_base ASC`,
+                produitIds
+            );
+
+            allUnites.forEach(u => {
+                if (!unitesParProduit[u.id_produit]) {
+                    unitesParProduit[u.id_produit] = [];
+                }
+                unitesParProduit[u.id_produit].push({
+                    id_unite_vente: u.id_unite_vente,
+                    nom: u.nom,
+                    quantite_base: parseFloat(u.quantite_base) || 1,
+                    prix_vente: parseFloat(u.prix_vente) || 0,
+                    prix_achat: parseFloat(u.prix_achat) || 0,
+                    est_principal: u.est_principal === 1 || u.est_principal === true,
+                });
+            });
+        }
+
+        // ✅ 3. Attacher les unités à chaque ligne
+        inventaire.lignes = lignes.map(l => ({
+            ...l,
+            unites_vente: unitesParProduit[l.id_produit] || [],
+        }));
+
+        // ✅ 4. Résumé calculé
         const nbLignes = lignes.length;
         const nbSaisis = lignes.filter(l => l.date_scannage).length;
         const lignesAvecEcart = lignes.filter(l => parseFloat(l.ecart) !== 0);
@@ -571,7 +591,7 @@ class Inventaire {
 
     /**
      * ============================================================
-     * Récupérer tous les inventaires (par workspace)
+     * Récupérer tous les inventaires
      * ============================================================
      */
     static async findAll(filters = {}, id_utilisateur) {

@@ -4,7 +4,7 @@ import { pool } from '../config/db.js';
 class Unite {
     /**
      * ============================================================
-     * UNITÉS PAR DÉFAUT POUR PIÈCES DÉTACHÉES MOTO
+     * UNITÉS PAR DÉFAUT POUR PIÈCES DÉTACHÉES MOTO 
      * ============================================================
      * Ces unités sont insérées automatiquement à l'inscription
      * d'un nouveau propriétaire (workspace).

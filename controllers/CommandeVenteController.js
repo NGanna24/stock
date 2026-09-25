@@ -15,7 +15,7 @@ class CommandeVenteController {
                 telephone = null,
                 date_commande,
                 notes,
-                mode_paiement,
+                mode_paiement, 
                 date_echeance,
                 lignes
             } = req.body;

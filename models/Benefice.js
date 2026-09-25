@@ -5,37 +5,9 @@ import { pool } from '../config/db.js';
  * ============================================================
  * LOGIQUE MÉTIER — Calcul du bénéfice
  * ============================================================
- *
- * Pour CHAQUE ligne de vente (lcv), on calcule :
- *   prix_achat_unite_effective =
- *       CASE
- *         WHEN uv.prix_achat > 0 THEN uv.prix_achat                -- 1. prix d'achat de l'unité vendue
- *         WHEN p.prix_achat  > 0 THEN p.prix_achat * quantite_base -- 2. fallback : prix produit × conversion
- *         ELSE NULL                                                -- 3. aucun prix → non calculable
- *       END
- *
- *   cout_ligne     = lcv.quantite * prix_achat_unite_effective
- *   benefice_ligne = lcv.montant_total - cout_ligne
- *
- * Règles :
- *  - Si uv.prix_achat est renseigné → on l'utilise DIRECTEMENT (le plus précis)
- *  - Sinon si p.prix_achat est renseigné → on le multiplie par quantite_base
- *  - Sinon → ligne ignorée du bénéfice, comptée dans "sans prix"
- *
- * Les 3 compteurs par ligne :
- *  - nb_lignes_prix_uv      : lignes avec prix d'achat de l'unité de vente
- *  - nb_lignes_prix_produit : lignes utilisant le fallback produit × conversion
- *  - nb_lignes_sans_prix    : lignes sans aucun prix (bénéfice non calculable)
- * ============================================================
+ * (identique, on garde la même logique)
  */
-
 class Benefice {
-    /**
-     * ============================================================
-     * SNIPPET SQL RÉUTILISABLE (à copier dans les requêtes)
-     * ============================================================
-     * Expression du prix d'achat unitaire effectif
-     */
     static get PRIX_ACHAT_UNITE_SQL() {
         return `
             CASE
@@ -67,7 +39,6 @@ class Benefice {
                 cv.telephone,
                 cv.montant_total AS ca_total,
 
-                -- ✅ Coût d'achat : additionne les coûts de chaque ligne
                 COALESCE(SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -78,7 +49,6 @@ class Benefice {
                     END
                 ), 0) AS cout_achat,
 
-                -- ✅ Bénéfice : seulement sur lignes calculables
                 COALESCE(SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -89,7 +59,6 @@ class Benefice {
                     END
                 ), 0) AS benefice_calcule,
 
-                -- ✅ Compteurs
                 COUNT(CASE
                     WHEN uv.prix_achat IS NULL OR uv.prix_achat <= 0
                         THEN 1
@@ -157,11 +126,7 @@ class Benefice {
         const [rows] = await pool.execute(
             `SELECT
                 COUNT(DISTINCT cv.id_commande) AS nombre_commandes,
-
-                -- CA total
                 COALESCE(SUM(lcv.montant_total), 0) AS chiffre_affaires,
-
-                -- CA uniquement sur lignes calculables
                 COALESCE(SUM(
                     CASE
                         WHEN uv.prix_achat > 0 OR p.prix_achat > 0
@@ -169,8 +134,6 @@ class Benefice {
                         ELSE 0
                     END
                 ), 0) AS ca_avec_cout_connu,
-
-                -- Coût total sur lignes calculables
                 COALESCE(SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -180,8 +143,6 @@ class Benefice {
                         ELSE 0
                     END
                 ), 0) AS cout_achat,
-
-                -- Bénéfice sur lignes calculables
                 COALESCE(SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -191,11 +152,7 @@ class Benefice {
                         ELSE 0
                     END
                 ), 0) AS benefice_calcule,
-
-                -- Quantité vendue (en unité de base)
                 COALESCE(SUM(lcv.quantite_totale_base), 0) AS quantite_vendue,
-
-                -- Compteurs
                 COUNT(CASE
                     WHEN uv.prix_achat IS NULL OR uv.prix_achat <= 0
                         THEN 1
@@ -238,20 +195,14 @@ class Benefice {
             benefice_brut: disponible ? benefice : null,
             benefice_estime: benefice,
             benefice_disponible: disponible,
-
             quantite_vendue: parseFloat(t.quantite_vendue) || 0,
             quantite_vendue_base: parseFloat(t.quantite_vendue) || 0,
-
-            // Ratios — calculés UNIQUEMENT si tous les coûts sont connus
             marge_brute_pct: disponible && ca > 0 ? ((benefice / ca) * 100) : null,
             taux_marge: disponible && cout > 0 ? ((benefice / cout) * 100) : null,
-
-            // Couverture
             nb_lignes_total: nbTotal,
             nb_lignes_prix_uv: parseInt(t.nb_lignes_prix_uv) || 0,
             nb_lignes_prix_produit: parseInt(t.nb_lignes_prix_produit) || 0,
             nb_lignes_sans_prix: nbSansPrix,
-            // Taux de couverture (% lignes avec un coût connu)
             taux_couverture: nbTotal > 0
                 ? parseFloat((((nbTotal - nbSansPrix) / nbTotal) * 100).toFixed(2))
                 : 100
@@ -274,11 +225,11 @@ class Benefice {
                 p.nom AS produit_nom,
                 m.nom AS marque_nom,
                 c.nom AS categorie_nom,
+                u.nom AS unite_nom,
+                u.symbole AS unite_symbole,
                 SUM(lcv.quantite_totale_base) AS quantite_vendue,
-
                 SUM(lcv.montant_total) AS chiffre_affaires,
 
-                -- Coût (lignes calculables)
                 SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -289,7 +240,6 @@ class Benefice {
                     END
                 ) AS cout_achat,
 
-                -- Bénéfice (lignes calculables)
                 SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -300,7 +250,6 @@ class Benefice {
                     END
                 ) AS benefice_calcule,
 
-                -- Compteurs
                 COUNT(CASE
                     WHEN uv.prix_achat IS NULL OR uv.prix_achat <= 0
                         THEN 1
@@ -323,14 +272,45 @@ class Benefice {
              LEFT JOIN unites_vente uv ON lcv.id_unite_vente = uv.id_unite_vente
              LEFT JOIN marques m ON p.id_marque = m.id_marque
              LEFT JOIN categories c ON p.id_categorie = c.id_categorie
+             LEFT JOIN unites u ON p.id_unite = u.id_unite
              JOIN commandes_vente cv ON lcv.id_commande = cv.id_commande
              WHERE cv.id_utilisateur = ?
                AND cv.date_commande BETWEEN ? AND ?
                AND cv.statut != 'annulee'
-             GROUP BY p.id_produit, p.nom, m.nom, c.nom, p.prix_achat, p.prix_vente
+             GROUP BY p.id_produit, p.nom, m.nom, c.nom, u.nom, u.symbole, p.prix_achat, p.prix_vente
              ORDER BY benefice_calcule DESC`,
             [id_utilisateur, dateDebut, dateFin]
         );
+
+        if (rows.length === 0) return [];
+
+        // ✅ Charger toutes les unités de vente des produits concernés
+        const produitIds = rows.map(r => r.id_produit);
+        const placeholders = produitIds.map(() => '?').join(',');
+
+        const [allUnites] = await pool.execute(
+            `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                    prix_vente, prix_achat, est_principal
+             FROM unites_vente
+             WHERE id_produit IN (${placeholders}) AND actif = TRUE
+             ORDER BY est_principal DESC, quantite_base ASC`,
+            produitIds
+        );
+
+        const unitesParProduit = {};
+        allUnites.forEach(u => {
+            if (!unitesParProduit[u.id_produit]) {
+                unitesParProduit[u.id_produit] = [];
+            }
+            unitesParProduit[u.id_produit].push({
+                id_unite_vente: u.id_unite_vente,
+                nom: u.nom,
+                quantite_base: parseFloat(u.quantite_base) || 1,
+                prix_vente: parseFloat(u.prix_vente) || 0,
+                prix_achat: parseFloat(u.prix_achat) || 0,
+                est_principal: u.est_principal === 1 || u.est_principal === true,
+            });
+        });
 
         return rows.map(r => {
             const ca = parseFloat(r.chiffre_affaires) || 0;
@@ -350,6 +330,8 @@ class Benefice {
                 produit_nom: r.produit_nom,
                 marque_nom: r.marque_nom,
                 categorie_nom: r.categorie_nom,
+                unite_nom: r.unite_nom,
+                unite_symbole: r.unite_symbole,
                 quantite_vendue: parseFloat(r.quantite_vendue) || 0,
                 quantite_vendue_base: parseFloat(r.quantite_vendue) || 0,
                 chiffre_affaires: ca,
@@ -364,7 +346,8 @@ class Benefice {
                 marge_unitaire_pct: margeUnitairePct,
                 nb_lignes_prix_uv: parseInt(r.nb_lignes_prix_uv) || 0,
                 nb_lignes_prix_produit: parseInt(r.nb_lignes_prix_produit) || 0,
-                nb_lignes_sans_prix: nbSansPrix
+                nb_lignes_sans_prix: nbSansPrix,
+                unites_vente: unitesParProduit[r.id_produit] || [],
             };
         });
     }
@@ -386,7 +369,6 @@ class Benefice {
                 COUNT(DISTINCT p.id_produit) AS nombre_produits,
                 SUM(lcv.quantite_totale_base) AS quantite_vendue,
                 SUM(lcv.montant_total) AS chiffre_affaires,
-
                 SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -396,7 +378,6 @@ class Benefice {
                         ELSE 0
                     END
                 ) AS cout_achat,
-
                 SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -406,7 +387,6 @@ class Benefice {
                         ELSE 0
                     END
                 ) AS benefice_calcule,
-
                 COUNT(CASE
                     WHEN (uv.prix_achat IS NULL OR uv.prix_achat <= 0)
                      AND (p.prix_achat IS NULL OR p.prix_achat <= 0)
@@ -463,7 +443,6 @@ class Benefice {
                 DATE(cv.date_commande) AS date,
                 COUNT(DISTINCT cv.id_commande) AS nombre_commandes,
                 SUM(lcv.montant_total) AS chiffre_affaires,
-
                 SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -473,7 +452,6 @@ class Benefice {
                         ELSE 0
                     END
                 ) AS cout_achat,
-
                 SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -483,7 +461,6 @@ class Benefice {
                         ELSE 0
                     END
                 ) AS benefice_calcule,
-
                 COUNT(CASE
                     WHEN (uv.prix_achat IS NULL OR uv.prix_achat <= 0)
                      AND (p.prix_achat IS NULL OR p.prix_achat <= 0)
@@ -539,7 +516,6 @@ class Benefice {
                 m.nom AS marque_nom,
                 SUM(lcv.quantite_totale_base) AS quantite_vendue,
                 SUM(lcv.montant_total) AS chiffre_affaires,
-
                 SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -549,7 +525,6 @@ class Benefice {
                         ELSE 0
                     END
                 ) AS benefice_calcule,
-
                 COUNT(CASE
                     WHEN (uv.prix_achat IS NULL OR uv.prix_achat <= 0)
                      AND (p.prix_achat IS NULL OR p.prix_achat <= 0)
@@ -607,7 +582,6 @@ class Benefice {
                 cv.telephone,
                 COUNT(DISTINCT cv.id_commande) AS nombre_commandes,
                 SUM(lcv.montant_total) AS chiffre_affaires,
-
                 SUM(
                     CASE
                         WHEN uv.prix_achat > 0
@@ -617,7 +591,6 @@ class Benefice {
                         ELSE 0
                     END
                 ) AS benefice_calcule,
-
                 COUNT(CASE
                     WHEN (uv.prix_achat IS NULL OR uv.prix_achat <= 0)
                      AND (p.prix_achat IS NULL OR p.prix_achat <= 0)
@@ -659,9 +632,6 @@ class Benefice {
      * ============================================================
      * PRODUITS LES PLUS RENTABLES (par marge %)
      * ============================================================
-     * Note : ici on utilise p.prix_achat et p.prix_vente car on veut
-     *        la marge "théorique" de l'unité de base.
-     *        Pour une vraie analyse de rentabilité, voir getBeneficesParProduit().
      */
     static async getProduitsPlusRentables(dateDebut, dateFin, id_utilisateur, limit = 10) {
         if (!id_utilisateur) {
@@ -714,6 +684,35 @@ class Benefice {
             [dateDebut, dateFin, id_utilisateur]
         );
 
+        if (rows.length === 0) return [];
+
+        const produitIds = rows.map(r => r.id_produit);
+        const placeholders = produitIds.map(() => '?').join(',');
+
+        const [allUnites] = await pool.execute(
+            `SELECT id_unite_vente, id_produit, nom, quantite_base,
+                    prix_vente, prix_achat, est_principal
+             FROM unites_vente
+             WHERE id_produit IN (${placeholders}) AND actif = TRUE
+             ORDER BY est_principal DESC, quantite_base ASC`,
+            produitIds
+        );
+
+        const unitesParProduit = {};
+        allUnites.forEach(u => {
+            if (!unitesParProduit[u.id_produit]) {
+                unitesParProduit[u.id_produit] = [];
+            }
+            unitesParProduit[u.id_produit].push({
+                id_unite_vente: u.id_unite_vente,
+                nom: u.nom,
+                quantite_base: parseFloat(u.quantite_base) || 1,
+                prix_vente: parseFloat(u.prix_vente) || 0,
+                prix_achat: parseFloat(u.prix_achat) || 0,
+                est_principal: u.est_principal === 1 || u.est_principal === true,
+            });
+        });
+
         return rows.map(r => ({
             id_produit: r.id_produit,
             produit_nom: r.produit_nom,
@@ -724,7 +723,8 @@ class Benefice {
             marge_pct: r.marge_pct !== null ? parseFloat(r.marge_pct) : null,
             quantite_vendue: parseFloat(r.quantite_vendue) || 0,
             quantite_vendue_base: parseFloat(r.quantite_vendue) || 0,
-            benefice_total: parseFloat(r.benefice_total) || 0
+            benefice_total: parseFloat(r.benefice_total) || 0,
+            unites_vente: unitesParProduit[r.id_produit] || [],
         }));
     }
 }
