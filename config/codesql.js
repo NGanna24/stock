@@ -452,6 +452,7 @@ CREATE TABLE IF NOT EXISTS ligne_commande_vente (
     id_unite_vente INT,
     nom_unite_vente VARCHAR(50) DEFAULT 'Unité',
     quantite_base DECIMAL(15, 2) DEFAULT 1, 
+    quantite_retournee_base DECIMAL(15, 2) DEFAULT 0,
     quantite DECIMAL(15, 2) NOT NULL,
     prix_vente DECIMAL(15, 2) NOT NULL,
     remise DECIMAL(15, 2) DEFAULT 0.00,
@@ -544,6 +545,7 @@ CREATE TABLE IF NOT EXISTS retours_clients (
     adresse TEXT,
     statut ENUM('en_attente', 'recu', 'controle', 'accepte', 'refuse', 'rembourse', 'echange', 'annule') DEFAULT 'en_attente',
     motif_retour ENUM('defectueux', 'non_conforme', 'mecontentement', 'erreur_livraison', 'echange', 'autre') NOT NULL,
+    type_resolution ENUM('remboursement_especes', 'avoir', 'echange', 'refus') DEFAULT 'remboursement_especes',
     montant_total DECIMAL(15, 2) DEFAULT 0.00,
     notes TEXT,
     date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -566,21 +568,37 @@ CREATE TABLE IF NOT EXISTS retour_client_lignes (
     id_retour_client INT NOT NULL,
     id_produit INT NOT NULL,
     id_ligne_commande_vente INT,
+
+    -- ✅ Traçabilité de l'unité (Carton, Bidon, Palette...)
+    id_unite_vente INT,
+    nom_unite_vente VARCHAR(50) DEFAULT 'Unité',
+    quantite_base DECIMAL(15, 2) DEFAULT 1,
+    quantite_totale_base DECIMAL(15, 2) DEFAULT 0,
+
+    -- Quantités
     quantite DECIMAL(15, 2) NOT NULL,
-    prix_vente DECIMAL(15, 2) NOT NULL,
+
+    -- Prix (catalogue vs réel remboursé)
+    prix_vente DECIMAL(15, 2) NOT NULL,             -- Prix catalogue actuel
+    prix_remboursement DECIMAL(15, 2) DEFAULT 0,    -- Prix réel calculé (prorata)
     remise DECIMAL(15, 2) DEFAULT 0.00,
-    montant_total DECIMAL(15, 2) GENERATED ALWAYS AS (quantite * prix_vente * (1 - remise/100)) STORED,
+
+    montant_total DECIMAL(15, 2) GENERATED ALWAYS AS (quantite * prix_remboursement * (1 - remise/100)) STORED,
+
     motif_retour ENUM('defectueux', 'non_conforme', 'mecontentement', 'erreur_livraison', 'echange', 'autre') NOT NULL,
     etat_produit ENUM('neuf', 'endommage', 'usage', 'incomplet') DEFAULT 'neuf',
     notes TEXT,
+
     INDEX idx_retour (id_retour_client),
     INDEX idx_produit (id_produit),
     INDEX idx_ligne_commande (id_ligne_commande_vente),
+    INDEX idx_unite_vente (id_unite_vente),
+
     FOREIGN KEY (id_retour_client) REFERENCES retours_clients(id_retour_client) ON DELETE CASCADE,
     FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE,
-    FOREIGN KEY (id_ligne_commande_vente) REFERENCES ligne_commande_vente(id_ligne_vente) ON DELETE SET NULL
+    FOREIGN KEY (id_ligne_commande_vente) REFERENCES ligne_commande_vente(id_ligne_vente) ON DELETE SET NULL,
+    FOREIGN KEY (id_unite_vente) REFERENCES unites_vente(id_unite_vente) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 -- =============================================================================
 -- ENTREPÔTS ET EMPLACEMENTS
 -- =============================================================================

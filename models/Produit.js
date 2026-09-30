@@ -11,7 +11,7 @@ class Produit {
         if (!id_utilisateur) {
             throw new Error('id_utilisateur requis pour findAll');
         }
-
+  
         const [rows] = await pool.execute(
             `SELECT p.*,
                     c.nom as categorie_nom,
