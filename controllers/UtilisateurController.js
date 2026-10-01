@@ -189,15 +189,28 @@ static async register(req, res) {
         }
     }
 
-/**
- * CONNEXION d'un utilisateur OU d'un employé
- * Cherche d'abord dans `utilisateurs`, puis dans `employes`
- */
 static async login(req, res) {
     try {
         const { telephone, password } = req.body;
 
+        // ==================== 🔍 LOGS DÉBUT ====================
+        console.log('');
+        console.log('═══════════════════════════════════════════════════');
+        console.log('🔐 [LOGIN] NOUVELLE TENTATIVE');
+        console.log('⏰ Timestamp :', new Date().toISOString());
+        console.log('📥 req.body :', {
+            telephone: JSON.stringify(telephone),
+            telephoneType: typeof telephone,
+            telephoneLength: telephone?.length,
+            passwordLength: password?.length,
+            passwordType: typeof password,
+            passwordPreview: password ? '***' + password.slice(-2) : '(vide)',
+        });
+        // =========================================================
+
         if (!telephone || !password) {
+            console.log('❌ [LOGIN] Étape 1 ÉCHEC → telephone ou password manquant');
+            console.log('═══════════════════════════════════════════════════');
             return res.status(400).json({
                 success: false,
                 message: 'Téléphone et mot de passe sont obligatoires'
@@ -205,65 +218,148 @@ static async login(req, res) {
         }
 
         const cleanedTelephone = telephone.replace(/\s/g, '');
+        console.log('🧹 [LOGIN] Étape 2 OK → telephone nettoyé :', JSON.stringify(cleanedTelephone));
 
-        // 1️⃣ Chercher dans les UTILISATEURS (admin)
+        // ============================================================
+        // 1️⃣ Recherche dans UTILISATEURS
+        // ============================================================
+        console.log('🔎 [LOGIN] Étape 3 → Recherche dans UTILISATEURS...');
         let user = await Utilisateur.findOnly(cleanedTelephone);
         let type = 'utilisateur';
-
-        // 2️⃣ Sinon, chercher dans les EMPLOYÉS
-        if (!user) {
-            user = await Employe.findByTelephone(cleanedTelephone);
-            type = 'employe';
+        if (user) {
+            console.log('   ✅ TROUVÉ dans utilisateurs');
+            console.log('      id_utilisateur :', user.id_utilisateur);
+            console.log('      fullname       :', user.fullname);
+            console.log('      telephone      :', user.telephone);
+            console.log('      actif          :', user.actif, '(type:', typeof user.actif, ')');
+            console.log('      role_nom       :', user.role_nom);
+        } else {
+            console.log('   ❌ NON TROUVÉ dans utilisateurs');
         }
 
+        // ============================================================
+        // 2️⃣ Recherche dans EMPLOYÉS
+        // ============================================================
         if (!user) {
+            console.log('🔎 [LOGIN] Étape 4 → Recherche dans EMPLOYES...');
+            user = await Employe.findByTelephone(cleanedTelephone);
+            type = 'employe';
+            if (user) {
+                console.log('   ✅ TROUVÉ dans employes');
+                console.log('      id_employe     :', user.id_employe);
+                console.log('      fullname       :', user.fullname);
+                console.log('      telephone      :', user.telephone);
+                console.log('      actif          :', user.actif, '(type:', typeof user.actif, ')');
+                console.log('      role_nom       :', user.role_nom);
+                console.log('      id_patron      :', user.id_patron);
+                console.log('      slug_patron    :', user.slug_patron);
+                console.log('      id_magasin     :', user.id_magasin);
+            } else {
+                console.log('   ❌ NON TROUVÉ dans employes');
+            }
+        }
+
+        // ============================================================
+        // AUCUN RÉSULTAT
+        // ============================================================
+        if (!user) {
+            console.log('');
+            console.log('💥 [LOGIN] ÉCHEC FINAL → Aucun user/employé trouvé');
+            console.log('   → telephone recherché :', JSON.stringify(cleanedTelephone));
+            console.log('   → Requête SQL à vérifier en prod :');
+            console.log('     SELECT * FROM utilisateurs WHERE telephone = ?', [cleanedTelephone]);
+            console.log('     SELECT * FROM employes WHERE telephone = ?', [cleanedTelephone]);
+            console.log('═══════════════════════════════════════════════════');
             return res.status(401).json({
                 success: false,
                 message: 'Identifiants invalides'
             });
         }
 
+        // ============================================================
+        // VÉRIFICATION STATUT ACTIF
+        // ============================================================
+        console.log('🔎 [LOGIN] Étape 5 → Vérification actif...');
         if (!user.actif) {
+            console.log('❌ [LOGIN] ÉCHEC → Compte désactivé (actif =', user.actif, ')');
+            console.log('═══════════════════════════════════════════════════');
             return res.status(403).json({
                 success: false,
                 message: 'Compte désactivé. Veuillez contacter l\'administrateur.'
             });
         }
+        console.log('   ✅ Compte actif');
 
-        // Vérifier le mot de passe selon le type
+        // ============================================================
+        // VÉRIFICATION MOT DE PASSE
+        // ============================================================
+        console.log('🔎 [LOGIN] Étape 6 → Vérification mot de passe (' + type + ')...');
         let isValidPassword = false;
+
         if (type === 'utilisateur') {
+            console.log('   → Appel Utilisateur.verifyPassword(id_utilisateur =', user.id_utilisateur, ')');
             isValidPassword = await Utilisateur.verifyPassword(user.id_utilisateur, password);
         } else {
+            console.log('   → Appel Employe.verifyPassword(id_employe =', user.id_employe, ')');
             isValidPassword = await Employe.verifyPassword(user.id_employe, password);
         }
 
+        console.log('   → Résultat bcrypt.compare :', isValidPassword);
+
         if (!isValidPassword) {
+            console.log('');
+            console.log('💥 [LOGIN] ÉCHEC FINAL → Mot de passe incorrect');
+            console.log('   → telephone :', cleanedTelephone);
+            console.log('   → type      :', type);
+            console.log('   → id        :', type === 'utilisateur' ? user.id_utilisateur : user.id_employe);
+            console.log('   → Vérifier manuellement avec :');
+            console.log('     bcrypt.compare("' + (password ? '***' + password.slice(-2) : '') + '", hash_en_base)');
+            console.log('═══════════════════════════════════════════════════');
             return res.status(401).json({
                 success: false,
                 message: 'Identifiants invalides'
             });
         }
 
-        // Générer le token (avec le `type` pour le middleware)
+        // ============================================================
+        // GÉNÉRATION DU TOKEN
+        // ============================================================
+        console.log('🔎 [LOGIN] Étape 7 → Génération du token JWT...');
         const id = type === 'utilisateur' ? user.id_utilisateur : user.id_employe;
         const token = jwt.sign(
             {
                 id,
                 telephone: user.telephone,
                 role: user.role_nom,
-                type                          // ⭐ 'utilisateur' | 'employe'
+                type
             },
             process.env.JWT_SECRET || 'your-secret-key',
             { expiresIn: JWT_EXPIRES_IN }
         );
+        console.log('   ✅ Token généré');
 
-        // Maj dernière connexion
+        // ============================================================
+        // MAJ DERNIÈRE CONNEXION
+        // ============================================================
+        console.log('🔎 [LOGIN] Étape 8 → Maj dernière connexion...');
         if (type === 'utilisateur') {
             await Utilisateur.updateLastLogin(user.id_utilisateur);
         } else {
             await Employe.updateLastLogin(user.id_employe);
         }
+        console.log('   ✅ Dernière connexion mise à jour');
+
+        // ============================================================
+        // RÉPONSE SUCCÈS
+        // ============================================================
+        console.log('');
+        console.log('✅ [LOGIN] SUCCÈS TOTAL pour :', user.fullname, '(' + type + ')');
+        console.log('   → id :', id);
+        console.log('   → slug :', type === 'utilisateur' ? user.slug : user.slug_patron);
+        console.log('   → role :', user.role_nom);
+        console.log('   → id_magasin :', type === 'employe' ? user.id_magasin : null);
+        console.log('═══════════════════════════════════════════════════');
+        console.log('');
 
         return res.status(200).json({
             success: true,
@@ -271,8 +367,8 @@ static async login(req, res) {
             token,
             user: {
                 id,
-                type,                                                       // 'utilisateur' | 'employe'
-                slug: type === 'utilisateur' ? user.slug : user.slug_patron, // toujours le slug du compte admin
+                type,
+                slug: type === 'utilisateur' ? user.slug : user.slug_patron,
                 fullname: user.fullname,
                 telephone: user.telephone,
                 email: user.email || null,
@@ -283,7 +379,12 @@ static async login(req, res) {
         });
 
     } catch (error) {
-        console.error('❌ Login error:', error);
+        console.log('');
+        console.log('💥💥💥 [LOGIN] EXCEPTION NON PRÉVUE 💥💥💥');
+        console.error('   Message :', error.message);
+        console.error('   Stack :', error.stack);
+        console.log('═══════════════════════════════════════════════════');
+        console.log('');
         return res.status(500).json({
             success: false,
             message: 'Erreur lors de la connexion'

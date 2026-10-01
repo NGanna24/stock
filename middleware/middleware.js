@@ -7,7 +7,7 @@ import Employe from '../models/Employe.js';
  * ============================================================
  * MIDDLEWARE D'AUTHENTIFICATION UNIFIÉ
  * ------------------------------------------------------------
- * Gère :
+ * Gère : 
  *   - Les UTILISATEURS (table `utilisateurs`) — rôle admin
  *   - Les EMPLOYÉS (table `employes`) — rôles caissier, magasinier...
  *
