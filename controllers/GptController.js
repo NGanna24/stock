@@ -22,7 +22,7 @@ class GptController {
       if (!result.text || result.text.trim() === '') {
         return res.status(200).json({
           success: false,
-          message: "Aucune parole détectée",
+          message: 'Aucune parole détectée',
           text: '',
         });
       }
@@ -58,7 +58,7 @@ class GptController {
       const safeHistory = Array.isArray(history)
         ? history
             .filter(
-              h =>
+              (h) =>
                 h &&
                 typeof h.content === 'string' &&
                 (h.role === 'user' || h.role === 'assistant')
@@ -70,6 +70,7 @@ class GptController {
         `💬 [GptController] Question : "${message}" (user ${req.workspaceId}, hist: ${safeHistory.length})`
       );
 
+      // ✅ On passe bien safeHistory en 4e argument
       const result = await GptChatService.chat(
         message,
         req.workspaceId,
@@ -78,7 +79,7 @@ class GptController {
       );
 
       console.log(
-        `✅ [GptController] Réponse : "${result.reply}" (tools: ${result.tools_used?.join(', ') || 'aucun'})`
+        `✅ [GptController] Réponse : "${result.reply}" (tools: ${result.tools_used?.join(', ') || 'aucun'}, iter: ${result.iterations})`
       );
 
       return res.status(200).json({

@@ -12,6 +12,56 @@ function safeNumber(value, max = 1_000_000_000) {
 }
 
 // ============================================================
+// UTILITAIRE : décomposition d'un stock en conditionnements
+// Retourne un tableau { nom, contient, quantite, reste_en_base, phrase }
+// ============================================================
+function decomposerStock(stockBase, uniteBase, unitesVente) {
+  return unitesVente
+    .filter((u) => u.quantite_base > 1)
+    .map((u) => {
+      const qte = Math.floor(stockBase / u.quantite_base);
+      const reste = stockBase - qte * u.quantite_base;
+      return {
+        nom: u.nom,
+        contient: u.quantite_base,
+        quantite: qte,
+        reste_en_base: reste,
+        phrase:
+          reste > 0
+            ? `${qte} ${u.nom}(s) + ${reste} ${uniteBase}(s)`
+            : `${qte} ${u.nom}(s)`,
+      };
+    });
+}
+
+// ============================================================
+// UTILITAIRE : charger les unités de vente pour un lot de produits
+// ============================================================
+async function chargerUnitesVente(idProduits) {
+  if (!idProduits.length) return {};
+
+  const placeholders = idProduits.map(() => '?').join(',');
+  const [rows] = await pool.execute(
+    `SELECT id_produit, nom, quantite_base, prix_vente, est_principal
+     FROM unites_vente
+     WHERE id_produit IN (${placeholders}) AND actif = TRUE
+     ORDER BY est_principal DESC, quantite_base ASC`,
+    idProduits
+  );
+
+  const map = {};
+  for (const u of rows) {
+    if (!map[u.id_produit]) map[u.id_produit] = [];
+    map[u.id_produit].push({
+      nom: u.nom,
+      quantite_base: parseFloat(u.quantite_base) || 1,
+      prix_vente: safeNumber(u.prix_vente),
+    });
+  }
+  return map;
+}
+
+// ============================================================
 // PRODUITS
 // ============================================================
 export async function rechercher_produit({ nom }, workspaceId) {
@@ -25,63 +75,48 @@ export async function rechercher_produit({ nom }, workspaceId) {
     return { found: false, message: `Aucun produit trouvé pour "${nom}"` };
   }
 
-  // ✅ Charger les unités de vente de chaque produit
-  const produitsEnrichis = await Promise.all(
-    produits.slice(0, 5).map(async (p) => {
-      let unitesVente = [];
-      try {
-        const [unites] = await pool.execute(
-          `SELECT nom, quantite_base, prix_vente, est_principal
-           FROM unites_vente
-           WHERE id_produit = ? AND actif = TRUE
-           ORDER BY est_principal DESC, quantite_base ASC`,
-          [p.id_produit]
-        );
-        unitesVente = unites.map(u => ({
-          nom: u.nom,
-          quantite_base: parseFloat(u.quantite_base) || 1,
-          prix_vente: safeNumber(u.prix_vente),
-        }));
-      } catch (e) {
-        console.warn(`⚠️ Unités vente produit ${p.id_produit}:`, e.message);
-      }
+  const top = produits.slice(0, 5);
+  const unitesParProduit = await chargerUnitesVente(top.map((p) => p.id_produit));
 
-      const stockBase = safeNumber(p.quantite_stock);
-      const uniteBase = p.unite_symbole || p.unite_nom || 'unité';
+  const produitsEnrichis = top.map((p) => {
+    const stockBase = safeNumber(p.quantite_stock);
+    const uniteBase = p.unite_symbole || p.unite_nom || 'unité';
+    const unitesVente = unitesParProduit[p.id_produit] || [];
+    const decompositions = decomposerStock(stockBase, uniteBase, unitesVente);
 
-      // ✅ Calcul de la décomposition en conditionnements
-      const decompositions = unitesVente
-        .filter(u => u.quantite_base > 1)
-        .map(u => {
-          const qte = Math.floor(stockBase / u.quantite_base);
-          const reste = stockBase - qte * u.quantite_base;
-          return {
-            conditionnement: u.nom,
-            contient: u.quantite_base,
-            unite_base: uniteBase,
-            quantite: qte,
-            reste_en_base: reste,
-            phrase: reste > 0
-              ? `${qte} ${u.nom}(s) + ${reste} ${uniteBase}(s)`
-              : `${qte} ${u.nom}(s)`,
-          };
-        });
+    // ✅ Phrase humanisée complète, directement lisible par l'IA
+    const reponseHumaine =
+      decompositions.length > 0
+        ? `${stockBase} ${uniteBase}(s) = ${decompositions.map((d) => d.phrase).join(' + ')}`
+        : `${stockBase} ${uniteBase}(s)`;
 
-      return {
-        nom: p.nom,
-        stock_base: stockBase,
-        unite_base: uniteBase,
-        prix_vente_base: safeNumber(p.prix_vente),
-        prix_achat_base: safeNumber(p.prix_achat),
-        statut: p.statut,
-        categorie: p.categorie_nom || null,
-        marque: p.marque_nom || null,
-        // ✅ NOUVEAU : la décomposition en cartons, palettes, etc.
-        conditionnements: decompositions,
-        unites_vente: unitesVente,
-      };
-    })
-  );
+    return {
+      nom: p.nom,
+
+      // ✅ Champs explicites (plus jamais d'ambiguïté base/conditionnement)
+      stock_total_en_unite_base: `${stockBase} ${uniteBase}(s)`,
+      stock_total_chiffre: stockBase,
+      unite_base: uniteBase,
+      reponse_humaine: reponseHumaine,
+
+      // ✅ Détail des conditionnements
+      conditionnements: decompositions.map((d) => ({
+        nom: d.nom,
+        contient_nb_unites_base: d.contient,
+        quantite_disponible: d.quantite,
+        reste_en_unite_base: d.reste_en_base,
+        phrase_complete: d.phrase,
+      })),
+
+      // Prix + méta
+      prix_unite_base: safeNumber(p.prix_vente),
+      prix_achat_unite_base: safeNumber(p.prix_achat),
+      statut: p.statut,
+      categorie: p.categorie_nom || null,
+      marque: p.marque_nom || null,
+      unites_vente: unitesVente,
+    };
+  });
 
   return {
     found: true,
@@ -94,7 +129,7 @@ export async function lister_produits({ limite = 30 }, workspaceId) {
   const limit = Math.min(Math.max(parseInt(limite) || 30, 1), 100);
 
   const [rows] = await pool.execute(
-    `SELECT p.nom, p.quantite_stock, p.quantite_minimale, p.prix_vente, p.statut,
+    `SELECT p.id_produit, p.nom, p.quantite_stock, p.quantite_minimale, p.prix_vente, p.statut,
             u.symbole AS unite_symbole, u.nom AS unite_nom,
             c.nom AS categorie_nom
      FROM produits p
@@ -106,17 +141,33 @@ export async function lister_produits({ limite = 30 }, workspaceId) {
     [workspaceId]
   );
 
+  const unitesParProduit = await chargerUnitesVente(rows.map((r) => r.id_produit));
+
   return {
     count: rows.length,
-    produits: rows.map(r => ({
-      nom: r.nom,
-      stock: safeNumber(r.quantite_stock),
-      stock_min: safeNumber(r.quantite_minimale),
-      unite: r.unite_symbole || r.unite_nom || 'unité',
-      prix_vente: safeNumber(r.prix_vente),
-      statut: r.statut,
-      categorie: r.categorie_nom || null,
-    })),
+    produits: rows.map((r) => {
+      const stockBase = safeNumber(r.quantite_stock);
+      const uniteBase = r.unite_symbole || r.unite_nom || 'unité';
+      const unitesVente = unitesParProduit[r.id_produit] || [];
+      const decompositions = decomposerStock(stockBase, uniteBase, unitesVente);
+
+      const conditionnementsPhrase =
+        decompositions.length > 0
+          ? decompositions.map((d) => d.phrase).join(' | ')
+          : null;
+
+      return {
+        nom: r.nom,
+        stock_en_unite_base: `${stockBase} ${uniteBase}(s)`,
+        stock_chiffre: stockBase,
+        unite_base: uniteBase,
+        conditionnements: conditionnementsPhrase, // "6 Carton(s) + 8 bidon(s)" ou null
+        stock_min: safeNumber(r.quantite_minimale),
+        prix_vente_unite_base: safeNumber(r.prix_vente),
+        statut: r.statut,
+        categorie: r.categorie_nom || null,
+      };
+    }),
   };
 }
 
@@ -139,7 +190,7 @@ export async function produits_en_rupture(args, workspaceId) {
 
   return {
     count: rows.length,
-    produits: rows.map(r => ({
+    produits: rows.map((r) => ({
       nom: r.nom,
       unite: r.unite_symbole || r.unite_nom || 'unité',
       fournisseur: r.fournisseur_nom || null,
@@ -150,7 +201,7 @@ export async function produits_en_rupture(args, workspaceId) {
 
 export async function produits_stock_bas(args, workspaceId) {
   const [rows] = await pool.execute(
-    `SELECT p.nom, p.quantite_stock, p.quantite_minimale,
+    `SELECT p.id_produit, p.nom, p.quantite_stock, p.quantite_minimale,
             u.symbole AS unite_symbole, u.nom AS unite_nom,
             f.nom AS fournisseur_nom
      FROM produits p
@@ -164,15 +215,29 @@ export async function produits_stock_bas(args, workspaceId) {
     [workspaceId]
   );
 
+  const unitesParProduit = await chargerUnitesVente(rows.map((r) => r.id_produit));
+
   return {
     count: rows.length,
-    produits: rows.map(r => ({
-      nom: r.nom,
-      stock: safeNumber(r.quantite_stock),
-      stock_min: safeNumber(r.quantite_minimale),
-      unite: r.unite_symbole || r.unite_nom || 'unité',
-      fournisseur: r.fournisseur_nom || null,
-    })),
+    produits: rows.map((r) => {
+      const stockBase = safeNumber(r.quantite_stock);
+      const uniteBase = r.unite_symbole || r.unite_nom || 'unité';
+      const unitesVente = unitesParProduit[r.id_produit] || [];
+      const decompositions = decomposerStock(stockBase, uniteBase, unitesVente);
+
+      return {
+        nom: r.nom,
+        stock_en_unite_base: `${stockBase} ${uniteBase}(s)`,
+        stock_chiffre: stockBase,
+        unite_base: uniteBase,
+        conditionnements:
+          decompositions.length > 0
+            ? decompositions.map((d) => d.phrase).join(' | ')
+            : null,
+        stock_min: safeNumber(r.quantite_minimale),
+        fournisseur: r.fournisseur_nom || null,
+      };
+    }),
   };
 }
 
@@ -243,7 +308,7 @@ export async function stock_par_categorie(args, workspaceId) {
 
   return {
     count: rows.length,
-    categories: rows.map(r => ({
+    categories: rows.map((r) => ({
       categorie: r.categorie,
       nb_produits: parseInt(r.nb_produits) || 0,
       valeur_vente: safeNumber(r.valeur_vente, 10_000_000_000),
@@ -269,7 +334,7 @@ export async function stock_par_fournisseur(args, workspaceId) {
 
   return {
     count: rows.length,
-    fournisseurs: rows.map(r => ({
+    fournisseurs: rows.map((r) => ({
       fournisseur: r.fournisseur,
       nb_produits: parseInt(r.nb_produits) || 0,
       valeur_achat: safeNumber(r.valeur_achat, 10_000_000_000),
@@ -281,7 +346,11 @@ export async function stock_par_fournisseur(args, workspaceId) {
 // VENTES
 // ============================================================
 export async function chiffre_affaires({ date_debut, date_fin }, workspaceId) {
-  const debut = date_debut || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const debut =
+    date_debut ||
+    new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+      .toISOString()
+      .slice(0, 10);
   const fin = date_fin || new Date().toISOString().slice(0, 10);
 
   const [rows] = await pool.execute(
@@ -310,7 +379,9 @@ export async function chiffre_affaires({ date_debut, date_fin }, workspaceId) {
 export async function top_produits({ limite = 5, date_debut, date_fin }, workspaceId) {
   const limit = Math.min(Math.max(parseInt(limite) || 5, 1), 10);
   const fin = date_fin || new Date().toISOString().slice(0, 10);
-  const debut = date_debut || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const debut =
+    date_debut ||
+    new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   const [rows] = await pool.execute(
     `SELECT 
@@ -332,7 +403,7 @@ export async function top_produits({ limite = 5, date_debut, date_fin }, workspa
   return {
     periode: { debut, fin },
     count: rows.length,
-    produits: rows.map(r => ({
+    produits: rows.map((r) => ({
       nom: r.nom,
       total_vendu: safeNumber(r.total_vendu),
       chiffre_affaires: safeNumber(r.chiffre_affaires, 10_000_000_000),
@@ -356,7 +427,7 @@ export async function factures_impayees(args, workspaceId) {
   return {
     count: rows.length,
     montant_total_impaye: total,
-    factures: rows.map(r => ({
+    factures: rows.map((r) => ({
       numero: r.numero_facture,
       date: r.date_facture,
       echeance: r.date_echeance,
@@ -382,7 +453,7 @@ export async function commandes_en_attente(args, workspaceId) {
 
   return {
     count: rows.length,
-    commandes: rows.map(r => ({
+    commandes: rows.map((r) => ({
       numero: r.numero_commande,
       date: r.date_commande,
       client: r.nomclient || r.telephone || 'Anonyme',
@@ -417,7 +488,7 @@ export async function rechercher_client({ telephone }, workspaceId) {
 
   return {
     found: true,
-    clients: rows.map(r => ({
+    clients: rows.map((r) => ({
       nom: r.nomclient || 'Anonyme',
       telephone: r.telephone,
       nombre_commandes: parseInt(r.nb_commandes) || 0,
@@ -429,7 +500,9 @@ export async function rechercher_client({ telephone }, workspaceId) {
 export async function top_clients({ limite = 5, date_debut, date_fin }, workspaceId) {
   const limit = Math.min(Math.max(parseInt(limite) || 5, 1), 10);
   const fin = date_fin || new Date().toISOString().slice(0, 10);
-  const debut = date_debut || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const debut =
+    date_debut ||
+    new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   const [rows] = await pool.execute(
     `SELECT nomclient, telephone, COUNT(*) AS nb_commandes,
@@ -448,7 +521,7 @@ export async function top_clients({ limite = 5, date_debut, date_fin }, workspac
   return {
     periode: { debut, fin },
     count: rows.length,
-    clients: rows.map(r => ({
+    clients: rows.map((r) => ({
       nom: r.nomclient || 'Anonyme',
       telephone: r.telephone,
       nombre_commandes: parseInt(r.nb_commandes) || 0,
@@ -489,6 +562,200 @@ export async function info_boutique(args, workspaceId) {
 }
 
 // ============================================================
+// FOURNISSEURS
+// ============================================================
+export async function lister_fournisseurs({ recherche = '' }, workspaceId) {
+  let query = `
+    SELECT f.id_fournisseur, f.nom, f.telephone, f.ville, f.pays,
+           COUNT(p.id_produit) AS nb_produits
+    FROM fournisseurs f
+    LEFT JOIN produits p ON p.id_fournisseur = f.id_fournisseur
+    WHERE f.id_utilisateur = ? AND f.actif = TRUE
+  `;
+  const params = [workspaceId];
+
+  if (recherche && recherche.trim().length > 0) {
+    query += ` AND f.nom LIKE ?`;
+    params.push(`%${recherche.trim()}%`);
+  }
+
+  query += ` GROUP BY f.id_fournisseur ORDER BY f.nom ASC LIMIT 30`;
+
+  const [rows] = await pool.execute(query, params);
+
+  return {
+    count: rows.length,
+    fournisseurs: rows.map((r) => ({
+      nom: r.nom,
+      telephone: r.telephone || null,
+      ville: r.ville || null,
+      pays: r.pays || null,
+      nb_produits: parseInt(r.nb_produits) || 0,
+    })),
+  };
+}
+
+// ============================================================
+// CATÉGORIES
+// ============================================================
+export async function lister_categories(args, workspaceId) {
+  const [rows] = await pool.execute(
+    `SELECT c.nom, COUNT(p.id_produit) AS nb_produits,
+            COALESCE(SUM(p.quantite_stock * p.prix_vente), 0) AS valeur_vente
+     FROM categories c
+     LEFT JOIN produits p ON p.id_categorie = c.id_categorie
+     WHERE c.id_utilisateur = ? AND c.statut = 'actif'
+     GROUP BY c.id_categorie, c.nom
+     ORDER BY nb_produits DESC
+     LIMIT 30`,
+    [workspaceId]
+  );
+
+  return {
+    count: rows.length,
+    categories: rows.map((r) => ({
+      nom: r.nom,
+      nb_produits: parseInt(r.nb_produits) || 0,
+      valeur_vente: safeNumber(r.valeur_vente, 10_000_000_000),
+    })),
+  };
+}
+
+// ============================================================
+// MARQUES
+// ============================================================
+export async function lister_marques(args, workspaceId) {
+  const [rows] = await pool.execute(
+    `SELECT m.nom, COUNT(p.id_produit) AS nb_produits
+     FROM marques m
+     LEFT JOIN produits p ON p.id_marque = m.id_marque
+     WHERE m.id_utilisateur = ? AND m.actif = TRUE
+     GROUP BY m.id_marque, m.nom
+     ORDER BY nb_produits DESC
+     LIMIT 30`,
+    [workspaceId]
+  );
+
+  return {
+    count: rows.length,
+    marques: rows.map((r) => ({
+      nom: r.nom,
+      nb_produits: parseInt(r.nb_produits) || 0,
+    })),
+  };
+}
+
+// ============================================================
+// MOUVEMENTS DE STOCK
+// ============================================================
+export async function derniers_mouvements({ limite = 10 }, workspaceId) {
+  const limit = Math.min(Math.max(parseInt(limite) || 10, 1), 30);
+
+  const [rows] = await pool.execute(
+    `SELECT m.type_mouvement, m.quantite, m.ancienne_quantite, m.nouvelle_quantite,
+            m.notes, m.date_mouvement,
+            p.nom AS produit_nom,
+            u.symbole AS unite_symbole
+     FROM mouvements_stock m
+     LEFT JOIN produits p ON m.id_produit = p.id_produit
+     LEFT JOIN unites u ON p.id_unite = u.id_unite
+     WHERE m.id_utilisateur = ?
+     ORDER BY m.date_mouvement DESC
+     LIMIT ${limit}`,
+    [workspaceId]
+  );
+
+  return {
+    count: rows.length,
+    mouvements: rows.map((r) => ({
+      type: r.type_mouvement,
+      produit: r.produit_nom || 'Produit supprimé',
+      quantite: safeNumber(r.quantite),
+      unite: r.unite_symbole || 'unité',
+      ancien_stock: safeNumber(r.ancienne_quantite),
+      nouveau_stock: safeNumber(r.nouvelle_quantite),
+      notes: r.notes || null,
+      date: r.date_mouvement,
+    })),
+  };
+}
+
+// ============================================================
+// DÉPENSES
+// ============================================================
+export async function depenses_periode({ date_debut, date_fin }, workspaceId) {
+  const debut =
+    date_debut ||
+    new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+      .toISOString()
+      .slice(0, 10);
+  const fin = date_fin || new Date().toISOString().slice(0, 10);
+
+  const [rows] = await pool.execute(
+    `SELECT cd.nom AS categorie, COUNT(d.id_depense) AS nb,
+            COALESCE(SUM(d.montant), 0) AS total
+     FROM depenses d
+     LEFT JOIN categories_depenses cd ON d.id_categorie_depense = cd.id_categorie_depense
+     WHERE d.id_utilisateur = ?
+       AND d.date_depense BETWEEN ? AND ?
+     GROUP BY cd.id_categorie_depense, cd.nom
+     ORDER BY total DESC`,
+    [workspaceId, debut, fin]
+  );
+
+  const total = rows.reduce((s, r) => s + safeNumber(r.total, 100_000_000), 0);
+
+  return {
+    periode: { debut, fin },
+    total_depenses: total,
+    par_categorie: rows.map((r) => ({
+      categorie: r.categorie || 'Sans catégorie',
+      nombre: parseInt(r.nb) || 0,
+      montant: safeNumber(r.total, 100_000_000),
+    })),
+  };
+}
+
+// ============================================================
+// RETOURS CLIENTS
+// ============================================================
+export async function retours_clients_recents({ limite = 10 }, workspaceId) {
+  const limit = Math.min(Math.max(parseInt(limite) || 10, 1), 30);
+
+  const [rows] = await pool.execute(
+    `SELECT numero_retour, nomclient, telephone, motif_retour,
+            montant_total, statut, date_retour
+     FROM retours_clients
+     WHERE id_utilisateur = ?
+     ORDER BY date_retour DESC
+     LIMIT ${limit}`,
+    [workspaceId]
+  );
+
+  const total = rows.reduce((s, r) => s + safeNumber(r.montant_total), 0);
+
+  return {
+    count: rows.length,
+    montant_total: total,
+    retours: rows.map((r) => ({
+      numero: r.numero_retour,
+      client: r.nomclient || r.telephone || 'Anonyme',
+      motif: r.motif_retour,
+      montant: safeNumber(r.montant_total),
+      statut: r.statut,
+      date: r.date_retour,
+    })),
+  };
+}
+
+// ============================================================
+// NO-OP : pour salutations et hors-sujet
+// ============================================================
+export async function aucune_action({ raison } = {}) {
+  return { ok: true, note: raison || 'Aucune action nécessaire' };
+}
+
+// ============================================================
 // EXPORT
 // ============================================================
 export const toolExecutors = {
@@ -507,4 +774,11 @@ export const toolExecutors = {
   rechercher_client,
   top_clients,
   info_boutique,
+  lister_fournisseurs,
+  lister_categories,
+  lister_marques,
+  derniers_mouvements,
+  depenses_periode,
+  retours_clients_recents,
+  aucune_action,
 };
