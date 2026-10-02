@@ -33,7 +33,8 @@ import employeRoutes from './routes/EmployeRoutes.js';
 // En haut, avec les autres imports
 import assistantAchatRoutes from './routes/AssistantAchatRoutes.js';
 import searchRoutes from './routes/SearchRoutes.js';
-
+// À ajouter avec les autres imports en haut
+import gptRoutes from './routes/GptRoutes.js';
 // Dans la section ROUTES API PRINCIPALES
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -119,6 +120,8 @@ app.use('/api/magasin', magasinRoutes);
 app.use('/api/employes', employeRoutes);
 app.use('/api/assistant-achat', assistantAchatRoutes);
 app.use('/api/search', searchRoutes);
+app.use('/api/gpt', gptRoutes);
+
 
 // ==================== DÉMARRAGE DU SERVEUR ====================
 const startServer = async () => {
@@ -132,7 +135,7 @@ const startServer = async () => {
             console.log(`✅ [Server] Serveur démarré sur le port ${PORT}`);
             console.log(`🌐 [Server] http://localhost:${PORT}`);
         });
-
+ 
         // Gestion des erreurs de démarrage du serveur
         server.on('error', (error) => {
             if (error.code === 'EADDRINUSE') {

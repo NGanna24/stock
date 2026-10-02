@@ -380,7 +380,7 @@ static async login(req, res) {
 
     } catch (error) {
         console.log('');
-        console.log('💥💥💥 [LOGIN] EXCEPTION NON PRÉVUE 💥💥💥');
+        console.log(' [LOGIN] EXCEPTION NON PRÉVUE ');
         console.error('   Message :', error.message);
         console.error('   Stack :', error.stack);
         console.log('═══════════════════════════════════════════════════');
