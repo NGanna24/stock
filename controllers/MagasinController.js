@@ -9,7 +9,7 @@ class MagasinController {
      * GET /api/magasin/mon-magasin
      * ============================================================
      */
-    static async getMonMagasin(req, res) {
+    static async getMonMagasin(req, res) { 
         try {
             const id_utilisateur = req.user.id_utilisateur;
 

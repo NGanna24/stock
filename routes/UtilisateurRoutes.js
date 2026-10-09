@@ -12,6 +12,8 @@ router.post('/login', UtilisateurController.login);
 
 // ==================== ROUTES PROTÉGÉES ==================== 
 router.get('/profile', authenticateToken, UtilisateurController.getProfile); 
+router.put('/profile', authenticateToken, UtilisateurController.updateProfile);
+
 
 
 // Réinitialisation de mot de passe (uniquement utilisateurs/patrons)

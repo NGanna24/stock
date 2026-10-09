@@ -62,7 +62,7 @@ app.use(
     }),
     express.static(path.join(__dirname, 'uploads'))
 );
-
+ 
 // ==================== CONFIGURATION CORS ====================
 const allowedOrigins = (process.env.CORS_ORIGIN || '*')
     .split(',')

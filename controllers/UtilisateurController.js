@@ -972,7 +972,7 @@ static async login(req, res) {
                 message: 'Mot de passe réinitialisé avec succès. Vous pouvez vous connecter.'
             });
 
-        } catch (error) {
+        } catch (error) { 
             console.error('❌ ResetPassword error:', error);
             return res.status(500).json({
                 success: false,
