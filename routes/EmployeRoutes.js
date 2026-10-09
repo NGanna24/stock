@@ -11,7 +11,7 @@ router.use(authenticateToken);
 // ⚠️ IMPORTANT : /stats AVANT /:id (sinon "stats" serait pris comme un ID)
 router.get('/stats',  EmployeController.getStats);
 
-router.get('/',        EmployeController.getAll);
+router.get('/',        EmployeController.getAll); 
 router.post('/',       EmployeController.create);
 
 router.get('/:id',     EmployeController.getById);

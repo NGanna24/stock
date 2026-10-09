@@ -153,7 +153,24 @@ class Utilisateur {
             throw error;
         }
     }
-
+/**
+ * Trouver un utilisateur par email
+ */
+static async findByEmail(email) {
+    try {
+        const [rows] = await pool.execute(
+            `SELECT u.*, r.nom as role_nom 
+             FROM utilisateurs u
+             LEFT JOIN roles r ON u.id_role = r.id_role
+             WHERE u.email = ?`,
+            [email]
+        );
+        return rows[0] || null;
+    } catch (error) {
+        console.error('❌ Error finding user by email:', error);
+        throw error;
+    }
+}
     /**
      * Trouver tous les utilisateurs
      */

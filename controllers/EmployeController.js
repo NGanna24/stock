@@ -11,7 +11,7 @@ class EmployeController {
      * ============================================================
      */
     static async create(req, res) {
-        try {
+        try { 
             const id_utilisateur = req.user.id_utilisateur;
             const { fullname, telephone, password, roleName, id_magasin } = req.body;
 
@@ -180,66 +180,75 @@ class EmployeController {
      * PUT /api/employes/:id
      * ============================================================
      */
-    static async update(req, res) {
-        try {
-            const { id } = req.params;
-            const id_utilisateur = req.user.id_utilisateur;
-            const { fullname, telephone, roleName, id_magasin, actif } = req.body;
+static async update(req, res) {
+    try {
+        const { id } = req.params;
+        const id_utilisateur = req.user.id_utilisateur;
+        const { fullname, telephone, roleName, id_magasin, actif, password } = req.body;
+        //                                                                   ^^^^^^^^ AJOUT
 
-            if (roleName === 'admin') {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Impossible d\'attribuer le rôle admin à un employé'
-                });
-            }
-
-            // ✅ Vérifier téléphone unique si modifié (délégué au model)
-            if (telephone) {
-                const cleanedTelephone = telephone.replace(/\s/g, '');
-                const telExiste = await Employe.telephoneExists(
-                    cleanedTelephone,
-                    id_utilisateur,
-                    id // excludeId : on exclut l'employé en cours de modification
-                );
-                if (telExiste) {
-                    return res.status(400).json({
-                        success: false,
-                        message: 'Ce numéro est déjà utilisé par un autre employé'
-                    });
-                }
-            }
-
-            const updated = await Employe.update(id, id_utilisateur, {
-                fullname,
-                telephone: telephone ? telephone.replace(/\s/g, '') : undefined,
-                roleName,
-                id_magasin,
-                actif
-            });
-
-            if (!updated) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Employé non trouvé ou aucune modification'
-                });
-            }
-
-            const employe = await Employe.findByIdAndPatron(id, id_utilisateur);
-
-            return res.status(200).json({
-                success: true,
-                message: 'Employé mis à jour avec succès',
-                employe
-            });
-
-        } catch (error) {
-            console.error('❌ UpdateEmploye error:', error);
-            return res.status(500).json({
+        if (roleName === 'admin') {
+            return res.status(400).json({
                 success: false,
-                message: error.message || 'Erreur lors de la mise à jour'
+                message: 'Impossible d\'attribuer le rôle admin à un employé'
             });
         }
+
+        // ✅ Validation du mot de passe s'il est fourni
+        if (password && !/^\d{4}$/.test(password)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Le mot de passe doit contenir exactement 4 chiffres'
+            });
+        }
+
+        if (telephone) {
+            const cleanedTelephone = telephone.replace(/\s/g, '');
+            const telExiste = await Employe.telephoneExists(
+                cleanedTelephone,
+                id_utilisateur,
+                id
+            );
+            if (telExiste) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Ce numéro est déjà utilisé par un autre employé'
+                });
+            }
+        }
+
+        const updated = await Employe.update(id, id_utilisateur, {
+            fullname,
+            telephone: telephone ? telephone.replace(/\s/g, '') : undefined,
+            roleName,
+            id_magasin,
+            actif,
+            password: password || undefined,  // ✅ AJOUT
+        });
+
+        if (!updated) {
+            return res.status(404).json({
+                success: false,
+                message: 'Employé non trouvé ou aucune modification'
+            });
+        }
+
+        const employe = await Employe.findByIdAndPatron(id, id_utilisateur);
+
+        return res.status(200).json({
+            success: true,
+            message: 'Employé mis à jour avec succès',
+            employe
+        });
+
+    } catch (error) {
+        console.error('❌ UpdateEmploye error:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || 'Erreur lors de la mise à jour'
+        });
     }
+}
 
     /**
      * ============================================================

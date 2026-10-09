@@ -34,6 +34,30 @@ CREATE TABLE IF NOT EXISTS utilisateurs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- =============================================================================
+-- RÉINITIALISATION DE MOT DE PASSE (OTP par EMAIL)
+-- Concerne UNIQUEMENT les utilisateurs (patrons)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS password_reset_otp ( 
+    id_otp INT PRIMARY KEY AUTO_INCREMENT,
+    email VARCHAR(255) NOT NULL,
+    code_otp VARCHAR(10) NOT NULL,
+    id_utilisateur INT NOT NULL,
+    tentatives INT DEFAULT 0,
+    utilise BOOLEAN DEFAULT FALSE,
+    expire_at DATETIME NOT NULL,
+    date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
+    ip_demande VARCHAR(45),
+
+    INDEX idx_email (email),
+    INDEX idx_code (code_otp),
+    INDEX idx_expire (expire_at),
+    INDEX idx_email_code (email, code_otp),
+
+    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
 CREATE TABLE IF NOT EXISTS magasins (
     id_magasin INT PRIMARY KEY AUTO_INCREMENT,
@@ -451,7 +475,7 @@ CREATE TABLE IF NOT EXISTS ligne_commande_vente (
     id_produit INT NOT NULL,
     id_unite_vente INT,
     nom_unite_vente VARCHAR(50) DEFAULT 'Unité',
-    quantite_base DECIMAL(15, 2) DEFAULT 1, 
+    quantite_base DECIMAL(15, 2) DEFAULT 1,  
     quantite_retournee_base DECIMAL(15, 2) DEFAULT 0,
     quantite DECIMAL(15, 2) NOT NULL,
     prix_vente DECIMAL(15, 2) NOT NULL,

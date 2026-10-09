@@ -3,7 +3,8 @@ import jwt from "jsonwebtoken";
 import Utilisateur from '../models/Utilisateur.js';
  import Magasin from '../models/Magasin.js';
  import Employe from '../models/Employe.js';
-
+import PasswordReset from '../models/PasswordReset.js';
+import { sendResetCode } from '../Services/emailService.js';
 
 const JWT_EXPIRES_IN = '30d';
 
@@ -776,6 +777,209 @@ static async login(req, res) {
         }
     }
 
+
+        /**
+     * ÉTAPE 1 : Demander un code de réinitialisation par email
+     * POST /api/utilisateur/forgot-password
+     * Body: { email }
+     */
+    static async forgotPassword(req, res) {
+        try {
+            const { email } = req.body;
+
+            if (!email) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'L\'adresse email est obligatoire'
+                });
+            }
+
+            const cleanedEmail = email.trim().toLowerCase();
+
+            // Validation format email
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanedEmail)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Adresse email invalide'
+                });
+            }
+
+            const ip = req.ip || req.connection.remoteAddress;
+
+            // Réponse générique (anti-énumération d'emails)
+            const genericResponse = {
+                success: true,
+                message: 'Si cette adresse email est enregistrée, un code de réinitialisation a été envoyé.'
+            };
+
+            // ============================================================
+            // 1️⃣ Chercher l'utilisateur par email
+            // ============================================================
+            const user = await Utilisateur.findByEmail(cleanedEmail);
+
+            if (!user) {
+                console.log('⚠️ [FORGOT-PWD] Email inconnu:', cleanedEmail);
+                return res.status(200).json(genericResponse);
+            }
+
+            if (!user.actif) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Compte désactivé. Contactez l\'administrateur.'
+                });
+            }
+
+            // ============================================================
+            // 2️⃣ Anti-spam : max 3 demandes / 15 minutes
+            // ============================================================
+            const recentCount = await PasswordReset.countRecentRequests(cleanedEmail, 15);
+            if (recentCount >= 3) {
+                return res.status(429).json({
+                    success: false,
+                    message: 'Trop de demandes. Veuillez réessayer dans 15 minutes.'
+                });
+            }
+
+            // ============================================================
+            // 3️⃣ Créer le code OTP
+            // ============================================================
+            const { code } = await PasswordReset.createOTP(
+                cleanedEmail,
+                user.id_utilisateur,
+                ip
+            );
+
+            // ============================================================
+            // 4️⃣ Envoyer l'email
+            // ============================================================
+            const emailResult = await sendResetCode(cleanedEmail, code, user.fullname);
+
+            if (!emailResult.success) {
+                console.error('❌ [FORGOT-PWD] Échec envoi email');
+                return res.status(500).json({
+                    success: false,
+                    message: 'Impossible d\'envoyer l\'email. Réessayez plus tard.'
+                });
+            }
+
+            console.log(`✅ [FORGOT-PWD] Code envoyé à ${cleanedEmail}`);
+
+            return res.status(200).json(genericResponse);
+
+        } catch (error) {
+            console.error('❌ ForgotPassword error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Erreur lors de la demande de réinitialisation'
+            });
+        }
+    }
+
+    /**
+     * ÉTAPE 2 : Vérifier le code OTP
+     * POST /api/utilisateur/verify-reset-code
+     * Body: { email, code }
+     */
+    static async verifyResetCode(req, res) {
+        try {
+            const { email, code } = req.body;
+
+            if (!email || !code) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Email et code sont obligatoires'
+                });
+            }
+
+            const cleanedEmail = email.trim().toLowerCase();
+            const result = await PasswordReset.verifyOTP(cleanedEmail, code);
+
+            if (!result.valid) {
+                return res.status(400).json({
+                    success: false,
+                    message: result.reason
+                });
+            }
+
+            return res.status(200).json({
+                success: true,
+                message: 'Code valide'
+            });
+
+        } catch (error) {
+            console.error('❌ VerifyResetCode error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Erreur lors de la vérification du code'
+            });
+        }
+    }
+
+    /**
+     * ÉTAPE 3 : Réinitialiser le mot de passe
+     * POST /api/utilisateur/reset-password
+     * Body: { email, code, newPassword }
+     */
+    static async resetPassword(req, res) {
+        try {
+            const { email, code, newPassword } = req.body;
+
+            // Validation
+            if (!email || !code || !newPassword) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Email, code et nouveau mot de passe sont obligatoires'
+                });
+            }
+
+            if (!/^\d{4}$/.test(newPassword)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Le nouveau mot de passe doit contenir exactement 4 chiffres'
+                });
+            }
+
+            const cleanedEmail = email.trim().toLowerCase();
+
+            // Vérifier le code
+            const verification = await PasswordReset.verifyOTP(cleanedEmail, code);
+            if (!verification.valid) {
+                return res.status(400).json({
+                    success: false,
+                    message: verification.reason
+                });
+            }
+
+            const otp = verification.otp;
+
+            // Mettre à jour le mot de passe
+            const updated = await Utilisateur.updatePassword(otp.id_utilisateur, newPassword);
+
+            if (!updated) {
+                return res.status(500).json({
+                    success: false,
+                    message: 'Erreur lors de la mise à jour du mot de passe'
+                });
+            }
+
+            // Marquer le code comme utilisé
+            await PasswordReset.markAsUsed(otp.id_otp);
+
+            console.log(`✅ [RESET-PWD] Mot de passe réinitialisé pour ${cleanedEmail}`);
+
+            return res.status(200).json({
+                success: true,
+                message: 'Mot de passe réinitialisé avec succès. Vous pouvez vous connecter.'
+            });
+
+        } catch (error) {
+            console.error('❌ ResetPassword error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Erreur lors de la réinitialisation'
+            });
+        }
+    }
     /**
      * ACTIVER/DÉSACTIVER un utilisateur (Admin)
      */

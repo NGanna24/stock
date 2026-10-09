@@ -184,56 +184,60 @@ class Employe {
      * Mettre à jour un employé
      * ============================================================
      */
-    static async update(id, id_utilisateur, data) {
-        const updates = [];
-        const values = [];
+static async update(id, id_utilisateur, data) {
+    const updates = [];
+    const values = [];
 
-        if (data.fullname) {
-            // Vérifier si le nom a changé → regénérer le slug
-            const current = await this.findByIdAndPatron(id, id_utilisateur);
-            if (current && current.fullname !== data.fullname) {
-                const newSlug = await this.createUniqueSlug(data.fullname, id_utilisateur);
-                updates.push('fullname = ?', 'slug = ?');
-                values.push(data.fullname, newSlug);
-            } else if (current && current.fullname === data.fullname) {
-                // Nom identique, ne rien changer
-            }
+    if (data.fullname) {
+        const current = await this.findByIdAndPatron(id, id_utilisateur);
+        if (current && current.fullname !== data.fullname) {
+            const newSlug = await this.createUniqueSlug(data.fullname, id_utilisateur);
+            updates.push('fullname = ?', 'slug = ?');
+            values.push(data.fullname, newSlug);
         }
-
-        if (data.telephone !== undefined) {
-            updates.push('telephone = ?');
-            values.push(data.telephone);
-        }
-
-        if (data.roleName) {
-            const roleId = await this.getRoleId(data.roleName);
-            if (!roleId) throw new Error(`Rôle '${data.roleName}' invalide`);
-            updates.push('id_role = ?');
-            values.push(roleId);
-        }
-
-        if (data.id_magasin !== undefined) {
-            updates.push('id_magasin = ?');
-            values.push(data.id_magasin);
-        }
-
-        if (data.actif !== undefined && data.actif !== null) {
-            updates.push('actif = ?');
-            values.push(data.actif ? 1 : 0);
-        }
-
-        if (updates.length === 0) return false;
-
-        values.push(id, id_utilisateur);
-
-        const [result] = await pool.execute(
-            `UPDATE employes SET ${updates.join(', ')} 
-             WHERE id_employe = ? AND id_utilisateur = ?`,
-            values
-        );
-
-        return result.affectedRows > 0;
     }
+
+    if (data.telephone !== undefined) {
+        updates.push('telephone = ?');
+        values.push(data.telephone);
+    }
+
+    if (data.roleName) {
+        const roleId = await this.getRoleId(data.roleName);
+        if (!roleId) throw new Error(`Rôle '${data.roleName}' invalide`);
+        updates.push('id_role = ?');
+        values.push(roleId);
+    }
+
+    if (data.id_magasin !== undefined) {
+        updates.push('id_magasin = ?');
+        values.push(data.id_magasin);
+    }
+
+    if (data.actif !== undefined && data.actif !== null) {
+        updates.push('actif = ?');
+        values.push(data.actif ? 1 : 0);
+    }
+
+    // ✅ AJOUT : gestion du mot de passe
+    if (data.password) {
+        const hashedPassword = await bcrypt.hash(data.password, 10);
+        updates.push('password = ?');
+        values.push(hashedPassword);
+    }
+
+    if (updates.length === 0) return false;
+
+    values.push(id, id_utilisateur);
+
+    const [result] = await pool.execute(
+        `UPDATE employes SET ${updates.join(', ')} 
+         WHERE id_employe = ? AND id_utilisateur = ?`,
+        values
+    );
+
+    return result.affectedRows > 0;
+}
 
     /**
      * ============================================================
