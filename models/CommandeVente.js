@@ -339,154 +339,197 @@ await connection.execute(
         }
     }
 
-    /**
-     * ============================================================
-     * ✅ Récupérer une commande par ID (avec unités de vente)
-     * ============================================================
-     */
-    static async findById(id, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour findById');
+        /**
+         * ============================================================
+         * ✅ Récupérer une commande par ID (avec unités de vente)
+         * ✅ AJOUT : total_paye calculé via sous-requête + fallback JS
+         * ============================================================
+         */
+        static async findById(id, id_utilisateur) {
+            if (!id_utilisateur) {
+                throw new Error('id_utilisateur requis pour findById');
+            }
+    
+            try {
+                const [rows] = await pool.execute(
+                    `SELECT cv.*,
+                            u.fullname as utilisateur_nom,
+                            fv.id_facture,
+                            fv.numero_facture,
+                            fv.date_facture,
+                            fv.date_echeance,
+                            fv.statut as statut_facture,
+                            fv.mode_paiement,
+                            fv.montant_total as montant_facture,
+                            -- ✅ AJOUT : total_paye calculé
+                            COALESCE((
+                                SELECT SUM(p.montant)
+                                FROM paiements p
+                                WHERE p.id_facture = fv.id_facture
+                                  AND p.id_utilisateur = cv.id_utilisateur
+                            ), 0) AS total_paye
+                     FROM commandes_vente cv
+                     LEFT JOIN utilisateurs u ON cv.id_utilisateur = u.id_utilisateur
+                     LEFT JOIN factures_vente fv ON cv.id_commande = fv.id_commande
+                     WHERE cv.id_commande = ?
+                       AND cv.id_utilisateur = ?`,
+                    [id, id_utilisateur]
+                );
+    
+                if (rows.length === 0) return null;
+                const commande = rows[0];
+    
+                // ✅ Lignes avec unités de vente
+                const [lignes] = await pool.execute(
+                    `SELECT lcv.*,
+                            p.nom as produit_nom,
+                            p.id_marque,
+                            m.nom as marque_nom,
+                            p.id_unite,
+                            u.symbole as unite_symbole,
+                            uv.nom as unite_vente_nom,
+                            uv.quantite_base as unite_vente_quantite_base
+                     FROM ligne_commande_vente lcv
+                     LEFT JOIN produits p ON lcv.id_produit = p.id_produit
+                     LEFT JOIN marques m ON p.id_marque = m.id_marque
+                     LEFT JOIN unites u ON p.id_unite = u.id_unite
+                     LEFT JOIN unites_vente uv ON lcv.id_unite_vente = uv.id_unite_vente
+                     WHERE lcv.id_commande = ?`,
+                    [id]
+                );
+    
+                commande.lignes = lignes.map(l => ({
+                    ...l,
+                    nom_unite_vente: l.nom_unite_vente || l.unite_vente_nom || 'Unité',
+                    quantite_base: parseFloat(l.quantite_base) || 1,
+                    quantite_totale_base: parseFloat(l.quantite_totale_base)
+                        || (parseFloat(l.quantite) * (parseFloat(l.quantite_base) || 1))
+                }));
+    
+                // Paiements
+                const [paiements] = await pool.execute(
+                    `SELECT p.*
+                     FROM paiements p
+                     INNER JOIN factures_vente fv ON p.id_facture = fv.id_facture
+                     WHERE fv.id_commande = ? AND p.id_utilisateur = ?
+                     ORDER BY p.date_paiement DESC`,
+                    [id, id_utilisateur]
+                );
+    
+                commande.paiements = paiements;
+    
+                // ✅ Filet de sécurité : recalcul si la sous-requête n'a rien renvoyé
+                if (commande.total_paye === undefined || commande.total_paye === null) {
+                    commande.total_paye = paiements.reduce(
+                        (sum, p) => sum + (parseFloat(p.montant) || 0),
+                        0
+                    );
+                } else {
+                    commande.total_paye = parseFloat(commande.total_paye) || 0;
+                }
+    
+                return commande;
+    
+            } catch (error) {
+                console.error('❌ Error finding commande vente by ID:', error);
+                throw error;
+            }
         }
-
-        try {
-            const [rows] = await pool.execute(
-                `SELECT cv.*,
-                        u.fullname as utilisateur_nom,
-                        fv.id_facture,
-                        fv.numero_facture,
-                        fv.date_facture,
-                        fv.date_echeance,
-                        fv.statut as statut_facture,
-                        fv.mode_paiement,
-                        fv.montant_total as montant_facture
-                 FROM commandes_vente cv
-                 LEFT JOIN utilisateurs u ON cv.id_utilisateur = u.id_utilisateur
-                 LEFT JOIN factures_vente fv ON cv.id_commande = fv.id_commande
-                 WHERE cv.id_commande = ?
-                   AND cv.id_utilisateur = ?`,
-                [id, id_utilisateur]
-            );
-
-            if (rows.length === 0) return null;
-            const commande = rows[0];
-
-            // ✅ Lignes avec unités de vente
-            const [lignes] = await pool.execute(
-                `SELECT lcv.*,
-                        p.nom as produit_nom,
-                        p.id_marque,
-                        m.nom as marque_nom,
-                        p.id_unite,
-                        u.symbole as unite_symbole,
-                        uv.nom as unite_vente_nom,
-                        uv.quantite_base as unite_vente_quantite_base
-                 FROM ligne_commande_vente lcv
-                 LEFT JOIN produits p ON lcv.id_produit = p.id_produit
-                 LEFT JOIN marques m ON p.id_marque = m.id_marque
-                 LEFT JOIN unites u ON p.id_unite = u.id_unite
-                 LEFT JOIN unites_vente uv ON lcv.id_unite_vente = uv.id_unite_vente
-                 WHERE lcv.id_commande = ?`,
-                [id]
-            );
-
-            // ✅ Enrichir avec fallback
-            commande.lignes = lignes.map(l => ({
-                ...l,
-                nom_unite_vente: l.nom_unite_vente || l.unite_vente_nom || 'Unité',
-                quantite_base: parseFloat(l.quantite_base) || 1,
-                quantite_totale_base: parseFloat(l.quantite_totale_base)
-                    || (parseFloat(l.quantite) * (parseFloat(l.quantite_base) || 1))
-            }));
-
-            // Paiements
-            const [paiements] = await pool.execute(
-                `SELECT p.*
-                 FROM paiements p
-                 INNER JOIN factures_vente fv ON p.id_facture = fv.id_facture
-                 WHERE fv.id_commande = ? AND p.id_utilisateur = ?
-                 ORDER BY p.date_paiement DESC`,
-                [id, id_utilisateur]
-            );
-
-            commande.paiements = paiements;
-            return commande;
-
-        } catch (error) {
-            console.error('❌ Error finding commande vente by ID:', error);
-            throw error;
+    
+        /**
+         * ============================================================
+         * Récupérer toutes les commandes avec filtres (par workspace)
+         * ✅ AJOUT : total_paye calculé via sous-requête
+         * ============================================================
+         */
+        static async findAll(filters = {}, id_utilisateur) {
+            if (!id_utilisateur) {
+                throw new Error('id_utilisateur requis pour findAll');
+            }
+    
+            try {
+                let query = `
+                    SELECT cv.*,
+                           u.fullname as utilisateur_nom,
+                           fv.id_facture,
+                           fv.numero_facture,
+                           fv.date_facture,
+                           fv.date_echeance,
+                           fv.statut as statut_facture,
+                           fv.mode_paiement,
+                           fv.montant_total as montant_facture,
+                           -- ✅ AJOUT : total_paye calculé pour chaque commande
+                           COALESCE((
+                               SELECT SUM(p.montant)
+                               FROM paiements p
+                               WHERE p.id_facture = fv.id_facture
+                                 AND p.id_utilisateur = cv.id_utilisateur
+                           ), 0) AS total_paye
+                    FROM commandes_vente cv
+                    LEFT JOIN utilisateurs u ON cv.id_utilisateur = u.id_utilisateur
+                    LEFT JOIN factures_vente fv ON cv.id_commande = fv.id_commande
+                    WHERE cv.id_utilisateur = ?
+                `;
+                const params = [id_utilisateur];
+    
+                if (filters.search) {
+                    query += ` AND (cv.numero_commande LIKE ?
+                                OR cv.nomclient LIKE ?
+                                OR cv.telephone LIKE ?
+                                OR fv.numero_facture LIKE ?)`;
+                    const s = `%${filters.search}%`;
+                    params.push(s, s, s, s);
+                }
+    
+                if (filters.statut) {
+                    query += ' AND cv.statut = ?';
+                    params.push(filters.statut);
+                }
+    
+                if (filters.date_debut) {
+                    query += ' AND cv.date_commande >= ?';
+                    params.push(filters.date_debut);
+                }
+    
+                if (filters.date_fin) {
+                    query += ' AND cv.date_commande <= ?';
+                    params.push(filters.date_fin);
+                }
+    
+                query += ' ORDER BY cv.date_commande DESC, cv.id_commande DESC';
+    
+                if (filters.limit) {
+                    const limit = Math.min(parseInt(filters.limit) || 50, 500);
+                    query += ` LIMIT ${limit}`;
+                }
+    
+                if (filters.offset) {
+                    const offset = Math.max(parseInt(filters.offset) || 0, 0);
+                    query += ` OFFSET ${offset}`;
+                }
+    
+                const [rows] = await pool.query(query, params);
+    
+                // ✅ Normalisation numérique
+                return rows.map(r => ({
+                    ...r,
+                    total_paye: parseFloat(r.total_paye) || 0,
+                    montant_total: parseFloat(r.montant_total) || 0,
+                }));
+    
+            } catch (error) {
+                console.error('❌ Error finding commandes vente:', error);
+                throw error;
+            }
         }
-    }
 
     /**
      * ============================================================
      * Récupérer toutes les commandes avec filtres (par workspace)
      * ============================================================
      */
-    static async findAll(filters = {}, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour findAll');
-        }
 
-        try {
-            let query = `
-                SELECT cv.*,
-                       u.fullname as utilisateur_nom,
-                       fv.id_facture,
-                       fv.numero_facture,
-                       fv.statut as statut_facture,
-                       fv.mode_paiement
-                FROM commandes_vente cv
-                LEFT JOIN utilisateurs u ON cv.id_utilisateur = u.id_utilisateur
-                LEFT JOIN factures_vente fv ON cv.id_commande = fv.id_commande
-                WHERE cv.id_utilisateur = ?
-            `;
-            const params = [id_utilisateur];
 
-            if (filters.search) {
-                query += ` AND (cv.numero_commande LIKE ?
-                            OR cv.nomclient LIKE ?
-                            OR cv.telephone LIKE ?
-                            OR fv.numero_facture LIKE ?)`;
-                const s = `%${filters.search}%`;
-                params.push(s, s, s, s);
-            }
-
-            if (filters.statut) {
-                query += ' AND cv.statut = ?';
-                params.push(filters.statut);
-            }
-
-            if (filters.date_debut) {
-                query += ' AND cv.date_commande >= ?';
-                params.push(filters.date_debut);
-            }
-
-            if (filters.date_fin) {
-                query += ' AND cv.date_commande <= ?';
-                params.push(filters.date_fin);
-            }
-
-            query += ' ORDER BY cv.date_commande DESC, cv.id_commande DESC';
-
-            if (filters.limit) {
-                const limit = Math.min(parseInt(filters.limit) || 50, 500);
-                query += ` LIMIT ${limit}`;
-            }
-
-            if (filters.offset) {
-                const offset = Math.max(parseInt(filters.offset) || 0, 0);
-                query += ` OFFSET ${offset}`;
-            }
-
-            const [rows] = await pool.query(query, params);
-            return rows;
-
-        } catch (error) {
-            console.error('❌ Error finding commandes vente:', error);
-            throw error;
-        }
-    }
 
     /**
      * ============================================================

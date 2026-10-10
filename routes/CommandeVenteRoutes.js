@@ -17,7 +17,7 @@ router.get('/telephone/:telephone', authenticateToken, CommandeVenteController.g
 // ==================== ROUTES PAR STATUT ====================
 router.get('/statut/:statut', authenticateToken, CommandeVenteController.getByStatut);
 
-// ==================== ROUTE ANNULATION ====================
+// ==================== ROUTE ANNULATION ==================== 
 router.patch('/:id/annuler', authenticateToken, CommandeVenteController.annuler);
 
 // ==================== ROUTE STATUT ====================

@@ -15,8 +15,8 @@ class Facture {
         const date = new Date();
         const annee = date.getFullYear();
         const mois = String(date.getMonth() + 1).padStart(2, '0');
-
-        const [rows] = await pool.execute(
+ 
+        const [rows] = await pool.execute( 
             `SELECT COUNT(*) as count
              FROM factures_vente
              WHERE id_utilisateur = ?
