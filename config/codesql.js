@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS password_reset_otp (
     id_otp INT PRIMARY KEY AUTO_INCREMENT,
     email VARCHAR(255) NOT NULL,
     code_otp VARCHAR(10) NOT NULL,
-    id_utilisateur INT NOT NULL,
+    id_utilisateur INT NOT NULL, 
     tentatives INT DEFAULT 0,
     utilise BOOLEAN DEFAULT FALSE,
     expire_at DATETIME NOT NULL,
