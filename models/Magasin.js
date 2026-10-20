@@ -19,6 +19,13 @@ class Magasin {
         'telephone2',
         'whatsapp',
         'email',
+        // 🆕 GÉOLOCALISATION
+        'latitude',
+        'longitude',
+        'adresse_complete',
+        'position_source',
+        'precision_gps',
+        // Infos légales
         'numero_rccm',
         'numero_nif',
         'numero_contribuable',
@@ -47,6 +54,13 @@ class Magasin {
             telephone2 = null,
             whatsapp = null,
             email = null,
+            // 🆕 GÉOLOCALISATION
+            latitude = null,
+            longitude = null,
+            adresse_complete = null,
+            position_source = 'manuel',
+            precision_gps = null,
+            // Infos légales
             numero_rccm = null,
             numero_nif = null,
             numero_contribuable = null,
@@ -58,13 +72,15 @@ class Magasin {
                 id_utilisateur,
                 nom_commercial, slogan, logo_url, description,
                 quartier, ville, pays, telephone, telephone2, whatsapp, email,
+                latitude, longitude, adresse_complete, position_source, precision_gps,
                 numero_rccm, numero_nif, numero_contribuable, regime_fiscal,
                 actif
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
             [
                 id_utilisateur,
                 nom_commercial, slogan, logo_url, description,
                 quartier, ville, pays, telephone, telephone2, whatsapp, email,
+                latitude, longitude, adresse_complete, position_source, precision_gps,
                 numero_rccm, numero_nif, numero_contribuable, regime_fiscal
             ]
         );
@@ -184,6 +200,49 @@ class Magasin {
             return null;
         }
         return await this.create(id_utilisateur, data);
+    }
+
+    /**
+     * ============================================================
+     * 🆕 Trouver les magasins proches d'un point GPS
+     * Formule Haversine (rayon Terre = 6371 km)
+     * ============================================================
+     */
+    static async findProches(latitude, longitude, rayonKm = 10) {
+        if (!latitude || !longitude) {
+            throw new Error('latitude et longitude requis');
+        }
+
+        const [rows] = await pool.execute(
+            `SELECT
+                m.id_magasin,
+                m.nom_commercial,
+                m.slogan,
+                m.logo_url,
+                m.quartier,
+                m.ville,
+                m.pays,
+                m.telephone,
+                m.whatsapp,
+                m.email,
+                m.latitude,
+                m.longitude,
+                (6371 * ACOS(
+                    COS(RADIANS(?)) * COS(RADIANS(m.latitude)) *
+                    COS(RADIANS(m.longitude) - RADIANS(?)) +
+                    SIN(RADIANS(?)) * SIN(RADIANS(m.latitude))
+                )) AS distance_km
+             FROM magasins m
+             WHERE m.actif = TRUE
+               AND m.latitude IS NOT NULL
+               AND m.longitude IS NOT NULL
+             HAVING distance_km < ?
+             ORDER BY distance_km ASC
+             LIMIT 50`,
+            [latitude, longitude, latitude, rayonKm]
+        );
+
+        return rows;
     }
 }
 

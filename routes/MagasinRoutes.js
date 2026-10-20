@@ -15,7 +15,13 @@ router.put('/mon-magasin',  authenticateToken, MagasinController.updateMonMagasi
 router.post('/upload-logo', authenticateToken, MagasinController.uploadLogo);
 router.delete('/logo',      authenticateToken, MagasinController.deleteLogo);
 
-// Magasin par ID
+// 🆕 Géocodage
+router.post('/geocoder',    authenticateToken, MagasinController.geocoder);
+
+// 🆕 Magasins proches (⚠️ AVANT /:id)
+router.get('/proches',      authenticateToken, MagasinController.getProches);
+
+// Magasin par ID (⚠️ DOIT ÊTRE EN DERNIER)
 router.get('/:id',          authenticateToken, MagasinController.getById);
 
 export default router;

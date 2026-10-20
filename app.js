@@ -33,6 +33,9 @@ import employeRoutes from './routes/EmployeRoutes.js';
 // En haut, avec les autres imports
 import assistantAchatRoutes from './routes/AssistantAchatRoutes.js';
 import searchRoutes from './routes/SearchRoutes.js';
+
+import adminRoutes from './routes/AdminRoutes.js';
+
 // À ajouter avec les autres imports en haut
 import gptRoutes from './routes/GptRoutes.js';
 // Dans la section ROUTES API PRINCIPALES
@@ -121,6 +124,8 @@ app.use('/api/employes', employeRoutes);
 app.use('/api/assistant-achat', assistantAchatRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/gpt', gptRoutes);
+app.use('/api/admin', adminRoutes);
+
 
 
 // ==================== DÉMARRAGE DU SERVEUR ====================

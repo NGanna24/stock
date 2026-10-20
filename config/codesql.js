@@ -78,6 +78,14 @@ CREATE TABLE IF NOT EXISTS magasins (
     whatsapp VARCHAR(20),
     email VARCHAR(150),
 
+
+    -- ========== GÉOLOCALISATION DU MAGASIN ==========
+    latitude DECIMAL(10, 8) NULL,
+    longitude DECIMAL(11, 8) NULL,
+    adresse_complete VARCHAR(500) NULL,
+    position_source ENUM('gps', 'ip', 'manuel') DEFAULT 'manuel',
+    precision_gps DECIMAL(10, 2) NULL,   -- précision en mètres (utile pour filtrer)
+
     -- ========== INFORMATIONS LÉGALES ==========
     numero_rccm VARCHAR(50),
     numero_nif VARCHAR(50),
