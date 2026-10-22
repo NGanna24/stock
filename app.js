@@ -35,9 +35,13 @@ import assistantAchatRoutes from './routes/AssistantAchatRoutes.js';
 import searchRoutes from './routes/SearchRoutes.js';
 
 import adminRoutes from './routes/AdminRoutes.js';
+import MagasinAdminRoutes from './routes/MagasinAdminRoutes.js';
+import UtilisateurAdminRoutes from './routes/UtilisateurAdminRoutes.js';
 
-// À ajouter avec les autres imports en haut
 import gptRoutes from './routes/GptRoutes.js';
+
+import SuperAdminAuthRoutes from './routes/SuperAdminAuthRoutes.js';
+import { authenticateSuperAdmin } from './middleware/superAdminAuth.js';
 // Dans la section ROUTES API PRINCIPALES
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -55,7 +59,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ==================== FICHIERS STATIQUES ====================
-// ✅ CORS activé pour permettre le chargement des images dans le PDF
+//  CORS activé pour permettre le chargement des images dans le PDF
 app.use(
     '/uploads',
     cors({
@@ -125,20 +129,21 @@ app.use('/api/assistant-achat', assistantAchatRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/gpt', gptRoutes);
 app.use('/api/admin', adminRoutes);
-
-
+app.use('/api/super-admin/magasins', MagasinAdminRoutes);
+app.use('/api/super-admin/utilisateurs', UtilisateurAdminRoutes);
+app.use('/api/super-admin/auth', SuperAdminAuthRoutes);
 
 // ==================== DÉMARRAGE DU SERVEUR ====================
 const startServer = async () => {
     try {
         // Initialisation de la base de données
         await initDataBase();
-        console.log('✅ [Database] Base de données initialisée avec succès');
+        console.log(' [Database] Base de données initialisée avec succès');
 
         const PORT = process.env.PORT || 8080;
         const server = app.listen(PORT, '0.0.0.0', () => {
-            console.log(`✅ [Server] Serveur démarré sur le port ${PORT}`);
-            console.log(`🌐 [Server] http://localhost:${PORT}`);
+            console.log(` [Server] Serveur démarré sur le port ${PORT}`);
+            console.log(` [Server] http://localhost:${PORT}`);
         });
  
         // Gestion des erreurs de démarrage du serveur

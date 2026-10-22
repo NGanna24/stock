@@ -32,7 +32,35 @@ CREATE TABLE IF NOT EXISTS utilisateurs (
     INDEX idx_slug (slug),
     FOREIGN KEY (id_role) REFERENCES roles(id_role) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- =============================================================================
+-- TABLE SUPER_ADMIN — accès propriétaire du logiciel
+-- Séparée des utilisateurs tenants pour isolation totale
+-- =============================================================================
 
+CREATE TABLE IF NOT EXISTS super_admins (
+    id_super_admin   INT PRIMARY KEY AUTO_INCREMENT,
+    fullname         VARCHAR(100) NOT NULL,
+
+    -- Identifiants de connexion
+    telephone        VARCHAR(20)  NOT NULL UNIQUE,
+    email            VARCHAR(255) NOT NULL UNIQUE,
+    password         VARCHAR(255) NOT NULL,   -- hash bcrypt
+
+    -- Sécurité renforcée
+    actif                 BOOLEAN DEFAULT TRUE,
+    tentatives_echouees   INT DEFAULT 0,
+    bloque_jusqua         DATETIME NULL,       -- blocage après N tentatives
+    derniere_connexion    TIMESTAMP NULL DEFAULT NULL,
+    derniere_ip           VARCHAR(45) NULL,
+
+    -- Traçabilité
+    date_creation    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    date_modification DATETIME ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_email (email),
+    INDEX idx_telephone (telephone),
+    INDEX idx_actif (actif)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
 -- RÉINITIALISATION DE MOT DE PASSE (OTP par EMAIL)
