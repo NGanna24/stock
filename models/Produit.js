@@ -859,92 +859,118 @@ static async findByModele(modeleNom, id_utilisateur) {
         return parseInt(rows[0].total) || 0;
     }
 
-    /**
-     * ============================================================
-     * Filtrer les produits (workspace)
-     * ============================================================
-     */
-    static async filter(filters, id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour filter');
-        }
-
-        let conditions = ['p.id_utilisateur = ?'];
-        let params = [id_utilisateur];
-
-        if (filters.categorie) {
-            conditions.push('p.id_categorie = ?');
-            params.push(filters.categorie);
-        }
-
-        if (filters.marque) {
-            conditions.push('p.id_marque = ?');
-            params.push(filters.marque);
-        }
-
-        if (filters.modele) {
-            conditions.push('p.id_modele = ?');
-            params.push(filters.modele);
-        }
-
-        if (filters.fournisseur) {
-            conditions.push('p.id_fournisseur = ?');
-            params.push(filters.fournisseur);
-        }
-
-        if (filters.statut) {
-            conditions.push('p.statut = ?');
-            params.push(filters.statut);
-        }
-
-        if (filters.stockMin !== undefined && filters.stockMin !== '') {
-            conditions.push('p.quantite_stock >= ?');
-            params.push(parseFloat(filters.stockMin));
-        }
-
-        if (filters.stockMax !== undefined && filters.stockMax !== '') {
-            conditions.push('p.quantite_stock <= ?');
-            params.push(parseFloat(filters.stockMax));
-        }
-
-        if (filters.prixMin !== undefined && filters.prixMin !== '') {
-            conditions.push('p.prix_vente >= ?');
-            params.push(parseFloat(filters.prixMin));
-        }
-
-        if (filters.prixMax !== undefined && filters.prixMax !== '') {
-            conditions.push('p.prix_vente <= ?');
-            params.push(parseFloat(filters.prixMax));
-        }
-
-        if (filters.search) {
-            conditions.push('(p.nom LIKE ? OR p.description LIKE ? OR f.nom LIKE ?)');
-            params.push(`%${filters.search}%`, `%${filters.search}%`, `%${filters.search}%`);
-        }
-
-        const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-        const [rows] = await pool.execute(
-            `SELECT p.*,
-                    c.nom as categorie_nom,
-                    m.nom as marque_nom,
-                    md.nom as modele_nom,
-                    u.nom as unite_nom,
-                    u.symbole as unite_symbole,
-                    f.nom as fournisseur_nom
-             FROM produits p
-             LEFT JOIN categories c ON p.id_categorie = c.id_categorie
-             LEFT JOIN marques m ON p.id_marque = m.id_marque
-             LEFT JOIN modeles md ON p.id_modele = md.id_modele
-             LEFT JOIN unites u ON p.id_unite = u.id_unite
-             LEFT JOIN fournisseurs f ON p.id_fournisseur = f.id_fournisseur
-             ${whereClause}
-             ORDER BY p.nom ASC`,
-            params
-        );
-
-        return rows;
+/**
+ * ============================================================
+ * Filtrer les produits (workspace)
+ * ============================================================
+ * La recherche texte (`filters.search`) porte sur :
+ *   - le nom du produit
+ *   - la description
+ *   - le nom du fournisseur
+ *   - le nom du modèle     ✅
+ *   - le nom de la marque  ✅
+ *   - le nom de la catégorie ✅
+ */
+static async filter(filters, id_utilisateur) {
+    if (!id_utilisateur) {
+        throw new Error('id_utilisateur requis pour filter');
     }
+
+    let conditions = ['p.id_utilisateur = ?'];
+    let params = [id_utilisateur];
+
+    // ---------- Filtres structurés ----------
+    if (filters.categorie) {
+        conditions.push('p.id_categorie = ?');
+        params.push(filters.categorie);
+    }
+
+    if (filters.marque) {
+        conditions.push('p.id_marque = ?');
+        params.push(filters.marque);
+    }
+
+    if (filters.modele) {
+        conditions.push('p.id_modele = ?');
+        params.push(filters.modele);
+    }
+
+    if (filters.fournisseur) {
+        conditions.push('p.id_fournisseur = ?');
+        params.push(filters.fournisseur);
+    }
+
+    if (filters.statut) {
+        conditions.push('p.statut = ?');
+        params.push(filters.statut);
+    }
+
+    if (filters.stockMin !== undefined && filters.stockMin !== '') {
+        conditions.push('p.quantite_stock >= ?');
+        params.push(parseFloat(filters.stockMin));
+    }
+
+    if (filters.stockMax !== undefined && filters.stockMax !== '') {
+        conditions.push('p.quantite_stock <= ?');
+        params.push(parseFloat(filters.stockMax));
+    }
+
+    if (filters.prixMin !== undefined && filters.prixMin !== '') {
+        conditions.push('p.prix_vente >= ?');
+        params.push(parseFloat(filters.prixMin));
+    }
+
+    if (filters.prixMax !== undefined && filters.prixMax !== '') {
+        conditions.push('p.prix_vente <= ?');
+        params.push(parseFloat(filters.prixMax));
+    }
+
+    // ---------- Recherche texte (multi-champs) ----------
+    if (filters.search && filters.search.trim() !== '') {
+        const searchPattern = `%${filters.search.trim()}%`;
+        conditions.push(`(
+            p.nom LIKE ?
+            OR p.description LIKE ?
+            OR f.nom LIKE ?
+            OR md.nom LIKE ?
+            OR m.nom LIKE ?
+            OR c.nom LIKE ?
+        )`);
+        params.push(
+            searchPattern,  // p.nom
+            searchPattern,  // p.description
+            searchPattern,  // f.nom   (fournisseur)
+            searchPattern,  // md.nom  (modèle)
+            searchPattern,  // m.nom   (marque)
+            searchPattern   // c.nom   (catégorie)
+        );
+    }
+
+    const whereClause = conditions.length > 0
+        ? `WHERE ${conditions.join(' AND ')}`
+        : '';
+
+    const [rows] = await pool.execute(
+        `SELECT p.*,
+                c.nom  AS categorie_nom,
+                m.nom  AS marque_nom,
+                md.nom AS modele_nom,
+                u.nom  AS unite_nom,
+                u.symbole AS unite_symbole,
+                f.nom  AS fournisseur_nom
+         FROM produits p
+         LEFT JOIN categories  c  ON p.id_categorie  = c.id_categorie
+         LEFT JOIN marques     m  ON p.id_marque     = m.id_marque
+         LEFT JOIN modeles     md ON p.id_modele     = md.id_modele
+         LEFT JOIN unites      u  ON p.id_unite      = u.id_unite
+         LEFT JOIN fournisseurs f ON p.id_fournisseur = f.id_fournisseur
+         ${whereClause}
+         ORDER BY p.nom ASC`,
+        params
+    );
+
+    return rows;
+}
 
     /**
      * ============================================================

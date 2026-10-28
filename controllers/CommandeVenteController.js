@@ -533,6 +533,40 @@ class CommandeVenteController {
             });
         }
     }
+
+    /**
+ * ============================================================
+ * 🔍 GET /api/commandes-vente/search-clients?q=...
+ * ============================================================
+ * Autocomplete client basé sur l'historique des ventes.
+ */
+static async searchClients(req, res) {
+    try {
+        const { q = '', limit = 10 } = req.query;
+
+        if (!q || q.trim().length < 2) {
+            return res.status(200).json({ success: true, data: [] });
+        }
+
+        const clients = await CommandeVente.searchClientsHistorique(
+            q.trim(),
+            req.workspaceId,
+            limit
+        );
+
+        return res.status(200).json({
+            success: true,
+            count: clients.length,
+            data: clients,
+        });
+    } catch (error) {
+        console.error('❌ SearchClients error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Erreur lors de la recherche des clients',
+        });
+    }
+}
 }
 
 export default CommandeVenteController;

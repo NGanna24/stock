@@ -960,6 +960,54 @@ await connection.execute(
             throw error;
         }
     }
+
+        /**
+ * ============================================================
+ * 🔍 Rechercher des clients à partir de l'historique des ventes
+ * ============================================================
+ * Retourne les clients distincts (nom + téléphone) ayant déjà
+ * commandé dans ce workspace, filtrés par nom ou téléphone.
+ */
+static async searchClientsHistorique(query, id_utilisateur, limit = 10) {
+    if (!id_utilisateur) {
+        throw new Error('id_utilisateur requis pour searchClientsHistorique');
+    }
+
+    const trimmed = (query || '').trim();
+    if (trimmed.length < 2) return [];
+
+    const like = `%${trimmed}%`;
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 20);
+
+    const [rows] = await pool.execute(
+        `SELECT
+            nomclient AS nom,
+            telephone,
+            COUNT(*) AS nb_commandes,
+            MAX(date_commande) AS derniere_vente,
+            SUM(montant_total) AS chiffre_affaires
+         FROM commandes_vente
+         WHERE id_utilisateur = ?
+           AND statut != 'annulee'
+           AND nomclient IS NOT NULL
+           AND nomclient != ''
+           AND (nomclient LIKE ? OR telephone LIKE ?)
+         GROUP BY nomclient, telephone
+         ORDER BY
+            derniere_vente DESC,
+            nb_commandes DESC
+         LIMIT ${safeLimit}`,
+        [id_utilisateur, like, like]
+    );
+
+    return rows.map((r) => ({
+        nom: r.nom,
+        telephone: r.telephone || '',
+        nb_commandes: parseInt(r.nb_commandes) || 0,
+        derniere_vente: r.derniere_vente,
+        chiffre_affaires: parseFloat(r.chiffre_affaires) || 0,
+    }));
+}
 }
 
 export default CommandeVente;

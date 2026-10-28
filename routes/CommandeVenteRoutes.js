@@ -6,7 +6,8 @@ import { authenticateToken } from '../middleware/middleware.js';
 const router = express.Router();
 
 // ==================== ROUTES STATISTIQUES ====================
-router.get('/stats', authenticateToken, CommandeVenteController.getStats);
+
+router.get('/stats', authenticateToken, CommandeVenteController.getStats); 
 
 // ==================== ROUTES D'EXPORT ====================
 router.get('/export', authenticateToken, CommandeVenteController.export);
@@ -25,6 +26,10 @@ router.patch('/:id/statut', authenticateToken, CommandeVenteController.updateSta
 
 // ==================== ROUTE PAIEMENT ====================
 router.post('/:id/paiement', authenticateToken, CommandeVenteController.addPaiement);
+
+// ==================== ROUTE RECHERCHE CLIENT ====================
+router.get('/search-clients', authenticateToken, CommandeVenteController.searchClients);
+
 
 // ==================== ROUTES CRUD PRINCIPALES ====================
 router.get('/', authenticateToken, CommandeVenteController.getAll);
