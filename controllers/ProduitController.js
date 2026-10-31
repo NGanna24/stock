@@ -5,7 +5,7 @@ import UniteVente from '../models/UniteVente.js';
 import { pool } from '../config/db.js';
 
 class ProduitController {
-/**
+/** 
  * ============================================================
  * Récupérer tous les produits du workspace (AVEC unités de vente)
  * ============================================================

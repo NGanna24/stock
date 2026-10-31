@@ -1,116 +1,107 @@
 // controllers/ReceptionController.js
+//
+// Réceptions : la destination (magasin / entrepôt) est celle de la commande.
+// Seul le PROPRIÉTAIRE d'un entrepôt peut réceptionner dans cet entrepôt.
+// `req.workspaceId` = compte (patron) : les employés agissent sous le compte de leur patron.
 import Reception from '../models/Reception.js';
 import CommandeAchat from '../models/CommandeAchat.js';
 import Produit from '../models/Produit.js';
-import Fournisseur from '../models/Fournisseur.js';
+
+const fail = (message, statusCode = 400) => {
+    const err = new Error(message);
+    err.statusCode = statusCode;
+    return err;
+};
 
 class ReceptionController {
+    /* ============================================================
+       HELPERS
+       ============================================================ */
+
+    /** Réponse d'erreur : code HTTP explicite, sinon détection des erreurs métier */
+    static _sendError(res, error, fallbackMessage) {
+        console.error('❌', error);
+
+        let status = error.statusCode;
+        if (!status) {
+            const msg = error.message || '';
+            const isBusinessError = [
+                'non trouvé', 'obligatoire', 'positive', 'déjà été', 'annulée',
+                'existe déjà', 'requis', 'Impossible de supprimer'
+            ].some((m) => msg.includes(m));
+            status = isBusinessError ? 400 : 500;
+        }
+
+        return res.status(status).json({
+            success: false,
+            message: status === 500 && fallbackMessage ? fallbackMessage : (error.message || fallbackMessage),
+            error: status === 500 && process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+
     /**
-     * ============================================================
-     * ✅ Créer une nouvelle réception
-     *    - ACCEPTE les réceptions partielles
-     *    - ACCEPTE les surplus
-     * ============================================================
+     * Destination demandée (query) -> { destination, id_entrepot }
+     * Pour 'entrepot' : le compte doit être propriétaire de l'entrepôt.
      */
+    static async _resolveScope(source, id_utilisateur) {
+        const s = CommandeAchat.scope(source?.destination, source?.id_entrepot);
+        if (s.destination === 'entrepot') {
+            if (!s.id_entrepot) throw fail("L'entrepôt est obligatoire");
+            if (!(await CommandeAchat.estProprietaireEntrepot(s.id_entrepot, id_utilisateur))) {
+                throw fail("Seul le propriétaire de l'entrepôt peut gérer les réceptions de cet entrepôt", 403);
+            }
+        }
+        return s;
+    }
+
+    /* ============================================================
+       Créer une réception
+         - ACCEPTE les réceptions partielles
+         - ACCEPTE les surplus
+       ============================================================ */
     static async create(req, res) {
         try {
-            const {
-                id_commande_achat,
-                date_reception,
-                notes,
-                lignes
-            } = req.body;
+            const { id_commande_achat, date_reception, notes, lignes } = req.body;
 
-            // ========== 1. VALIDATIONS DE BASE ==========
-            if (!date_reception) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'La date de réception est obligatoire'
-                });
-            }
-            if (!lignes || lignes.length === 0) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Au moins un produit est requis'
-                });
-            }
+            // 1. Validations de base
+            if (!date_reception) throw fail('La date de réception est obligatoire');
+            if (!lignes || lignes.length === 0) throw fail('Au moins un produit est requis');
 
-            // ========== 2. VÉRIFIER LA COMMANDE ==========
+            // 2. Commande -> destination
+            let scope;
             if (id_commande_achat) {
                 const commande = await CommandeAchat.findById(id_commande_achat, req.workspaceId);
-                if (!commande) {
-                    return res.status(404).json({
-                        success: false,
-                        message: 'Commande non trouvée'
-                    });
-                }
+                if (!commande) throw fail('Commande non trouvée', 404);
+                if (commande.statut === 'recue') throw fail('Cette commande a déjà été entièrement reçue');
+                if (commande.statut === 'annulee') throw fail('Cette commande est annulée, impossible de la recevoir');
 
-                if (commande.statut === 'recue') {
-                    return res.status(400).json({
-                        success: false,
-                        message: 'Cette commande a déjà été entièrement reçue'
-                    });
-                }
-                if (commande.statut === 'annulee') {
-                    return res.status(400).json({
-                        success: false,
-                        message: 'Cette commande est annulée, impossible de la recevoir'
-                    });
-                }
+                scope = await ReceptionController._resolveScope(
+                    { destination: commande.destination, id_entrepot: commande.id_entrepot },
+                    req.workspaceId
+                );
+            } else {
+                scope = await ReceptionController._resolveScope(req.body, req.workspaceId);
             }
 
-            // ========== 3. VÉRIFIER LES PRODUITS ==========
+            // 3. Lignes (l'existence des produits d'entrepôt est vérifiée dans le modèle, sous transaction)
             for (const ligne of lignes) {
-                const {
-                    id_produit,
-                    id_unite_vente = null,
-                    quantite_base = 1,
-                    quantite_commandee = 0,
-                    quantite_recue,
-                    quantite_totale_base = null
-                } = ligne;
-
-                const produit = await Produit.findById(id_produit, req.workspaceId);
-                if (!produit) {
-                    return res.status(404).json({
-                        success: false,
-                        message: `Produit ID ${id_produit} non trouvé`
-                    });
+                if (!ligne.quantite_recue || parseFloat(ligne.quantite_recue) <= 0) {
+                    throw fail('La quantité reçue doit être positive');
                 }
-
-                if (!quantite_recue || parseFloat(quantite_recue) <= 0) {
-                    return res.status(400).json({
-                        success: false,
-                        message: `La quantité reçue pour "${produit.nom}" doit être positive`
-                    });
-                }
-
-                // ============================================================
-                // ✅ SURPLUS AUTORISÉ : on log juste un avertissement
-                // ============================================================
-                let qteBase = parseFloat(quantite_base) || 1;
-                const qteTotaleBase = quantite_totale_base !== null
-                    ? parseFloat(quantite_totale_base)
-                    : parseFloat(quantite_recue) * qteBase;
-
-                if (quantite_commandee && parseFloat(quantite_commandee) > 0) {
-                    const qteCommandeeBase = parseFloat(quantite_commandee) * qteBase;
-                    if (qteTotaleBase > qteCommandeeBase) {
-                        console.log(
-                            `⚠️ Surplus détecté pour "${produit.nom}" : ` +
-                            `commandé ${qteCommandeeBase}, reçu ${qteTotaleBase}`
-                        );
-                        // ✅ On continue, pas d'erreur
-                    }
+                if (scope.destination === 'magasin') {
+                    const produit = await Produit.findById(ligne.id_produit, req.workspaceId);
+                    if (!produit) throw fail(`Produit ID ${ligne.id_produit} non trouvé`, 404);
                 }
             }
 
-            // ========== 4. CRÉATION ==========
+            // 4. Création
             const reception = await Reception.create({
                 id_commande_achat,
                 date_reception,
                 notes,
                 id_utilisateur: req.workspaceId,
+                destination: scope.destination,
+                id_entrepot: scope.id_entrepot,
                 lignes
             });
 
@@ -121,31 +112,13 @@ class ReceptionController {
             });
 
         } catch (error) {
-            console.error('❌ Create reception error:', error);
-
-            const isBusinessError = error.message && (
-                error.message.includes('non trouvé') ||
-                error.message.includes('obligatoire') ||
-                error.message.includes('positive') ||
-                error.message.includes('déjà été') ||
-                error.message.includes('annulée') ||
-                error.message.includes('existe déjà') ||
-                error.message.includes('requis')
-            );
-
-            return res.status(isBusinessError ? 400 : 500).json({
-                success: false,
-                message: error.message || 'Erreur lors de la création de la réception',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
-            });
+            return ReceptionController._sendError(res, error, 'Erreur lors de la création de la réception');
         }
     }
 
-    /**
-     * ============================================================
-     * Récupérer toutes les réceptions
-     * ============================================================
-     */
+    /* ============================================================
+       Toutes les réceptions (?destination=&id_entrepot=)
+       ============================================================ */
     static async getAll(req, res) {
         try {
             const {
@@ -158,20 +131,22 @@ class ReceptionController {
                 limit = 20
             } = req.query;
 
+            const scope = await ReceptionController._resolveScope(req.query, req.workspaceId);
+
+            const pageNum = parseInt(page) || 1;
+            const limitNum = parseInt(limit) || 20;
+
             const filters = {
                 search,
                 id_commande_achat,
                 statut,
                 date_debut,
-                date_fin
+                date_fin,
+                destination: scope.destination,
+                id_entrepot: scope.id_entrepot,
+                limit: limitNum,
+                offset: (pageNum - 1) * limitNum
             };
-
-            const pageNum = parseInt(page) || 1;
-            const limitNum = parseInt(limit) || 20;
-            const offset = (pageNum - 1) * limitNum;
-
-            filters.limit = limitNum;
-            filters.offset = offset;
 
             const receptions = await Reception.findAll(filters, req.workspaceId);
 
@@ -184,161 +159,91 @@ class ReceptionController {
             });
 
         } catch (error) {
-            console.error('❌ Get all receptions error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des réceptions'
-            });
+            return ReceptionController._sendError(res, error, 'Erreur lors de la récupération des réceptions');
         }
     }
 
-    /**
-     * ============================================================
-     * Récupérer une réception par ID
-     * ============================================================
-     */
+    /* ============================================================
+       Une réception par ID
+       ============================================================ */
     static async getById(req, res) {
         try {
-            const { id } = req.params;
-            const reception = await Reception.findById(id, req.workspaceId);
+            const reception = await Reception.findById(req.params.id, req.workspaceId);
 
-            if (!reception) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Réception non trouvée'
-                });
-            }
+            if (!reception) throw fail('Réception non trouvée', 404);
 
-            return res.status(200).json({
-                success: true,
-                data: reception
-            });
+            return res.status(200).json({ success: true, data: reception });
 
         } catch (error) {
-            console.error('❌ Get reception by ID error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération de la réception'
-            });
+            return ReceptionController._sendError(res, error, 'Erreur lors de la récupération de la réception');
         }
     }
 
-    /**
-     * ============================================================
-     * Récupérer les réceptions par statut
-     * ============================================================
-     */
+    /* ============================================================
+       Par statut (?destination=&id_entrepot=)
+       ============================================================ */
     static async getByStatut(req, res) {
         try {
             const { statut } = req.params;
 
             const statutsValides = ['en_attente', 'partielle', 'complete', 'annulee'];
-            if (!statutsValides.includes(statut)) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Statut invalide'
-                });
-            }
+            if (!statutsValides.includes(statut)) throw fail('Statut invalide');
 
-            const receptions = await Reception.findByStatut(statut, req.workspaceId);
+            const scope = await ReceptionController._resolveScope(req.query, req.workspaceId);
+            const receptions = await Reception.findByStatut(statut, req.workspaceId, scope);
 
-            return res.status(200).json({
-                success: true,
-                count: receptions.length,
-                data: receptions
-            });
+            return res.status(200).json({ success: true, count: receptions.length, data: receptions });
 
         } catch (error) {
-            console.error('❌ Get by statut error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des réceptions'
-            });
+            return ReceptionController._sendError(res, error, 'Erreur lors de la récupération des réceptions');
         }
     }
 
-    /**
-     * ============================================================
-     * Récupérer les réceptions d'une commande
-     * ============================================================
-     */
+    /* ============================================================
+       Réceptions d'une commande
+       ============================================================ */
     static async getByCommande(req, res) {
         try {
-            const { id_commande } = req.params;
-            const receptions = await Reception.findByCommande(id_commande, req.workspaceId);
+            const receptions = await Reception.findByCommande(req.params.id_commande, req.workspaceId);
 
-            return res.status(200).json({
-                success: true,
-                count: receptions.length,
-                data: receptions
-            });
+            return res.status(200).json({ success: true, count: receptions.length, data: receptions });
 
         } catch (error) {
-            console.error('❌ Get by commande error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des réceptions'
-            });
+            return ReceptionController._sendError(res, error, 'Erreur lors de la récupération des réceptions');
         }
     }
 
-    /**
-     * ============================================================
-     * Statistiques des réceptions
-     * ============================================================
-     */
+    /* ============================================================
+       Statistiques (?destination=&id_entrepot=)
+       ============================================================ */
     static async getStats(req, res) {
         try {
-            const stats = await Reception.getStats(req.workspaceId);
+            const scope = await ReceptionController._resolveScope(req.query, req.workspaceId);
+            const stats = await Reception.getStats(req.workspaceId, scope);
 
-            return res.status(200).json({
-                success: true,
-                data: stats
-            });
+            return res.status(200).json({ success: true, data: stats });
 
         } catch (error) {
-            console.error('❌ Get stats error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des statistiques'
-            });
+            return ReceptionController._sendError(res, error, 'Erreur lors de la récupération des statistiques');
         }
     }
 
-    /**
-     * ============================================================
-     * Mettre à jour le statut d'une réception
-     * ============================================================
-     */
+    /* ============================================================
+       Changer le statut d'une réception
+       ============================================================ */
     static async updateStatut(req, res) {
         try {
             const { id } = req.params;
             const { statut } = req.body;
 
             const statutsValides = ['en_attente', 'partielle', 'complete', 'annulee'];
-            if (!statutsValides.includes(statut)) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Statut invalide'
-                });
-            }
+            if (!statutsValides.includes(statut)) throw fail('Statut invalide');
 
             const reception = await Reception.findById(id, req.workspaceId);
-            if (!reception) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Réception non trouvée'
-                });
-            }
+            if (!reception) throw fail('Réception non trouvée', 404);
 
             const updated = await Reception.updateStatut(id, statut, req.workspaceId);
-
-            if (!updated) {
-                return res.status(500).json({
-                    success: false,
-                    message: 'Erreur lors de la mise à jour du statut'
-                });
-            }
+            if (!updated) throw new Error('Erreur lors de la mise à jour du statut');
 
             return res.status(200).json({
                 success: true,
@@ -347,60 +252,36 @@ class ReceptionController {
             });
 
         } catch (error) {
-            console.error('❌ Update statut error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la mise à jour du statut'
-            });
+            return ReceptionController._sendError(res, error, 'Erreur lors de la mise à jour du statut');
         }
     }
 
-    /**
-     * ============================================================
-     * Supprimer une réception
-     * ============================================================
-     */
+    /* ============================================================
+       Supprimer une réception
+       ============================================================ */
     static async delete(req, res) {
         try {
-            const { id } = req.params;
+            const deleted = await Reception.delete(req.params.id, req.workspaceId);
 
-            const deleted = await Reception.delete(id, req.workspaceId);
+            if (!deleted) throw fail('Réception non trouvée ou ne peut pas être supprimée', 404);
 
-            if (!deleted) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Réception non trouvée ou ne peut pas être supprimée'
-                });
-            }
-
-            return res.status(200).json({
-                success: true,
-                message: 'Réception supprimée avec succès'
-            });
+            return res.status(200).json({ success: true, message: 'Réception supprimée avec succès' });
 
         } catch (error) {
-            console.error('❌ Delete reception error:', error);
-
-            const isBusinessError = error.message && (
-                error.message.includes('non trouvée') ||
-                error.message.includes('Impossible de supprimer')
-            );
-
-            return res.status(isBusinessError ? 400 : 500).json({
-                success: false,
-                message: error.message || 'Erreur lors de la suppression de la réception'
-            });
+            return ReceptionController._sendError(res, error, 'Erreur lors de la suppression de la réception');
         }
     }
 
-    /**
-     * ============================================================
-     * Exporter les réceptions
-     * ============================================================
-     */
+    /* ============================================================
+       Export (?destination=&id_entrepot=)
+       ============================================================ */
     static async export(req, res) {
         try {
-            const receptions = await Reception.findAll(req.query, req.workspaceId);
+            const scope = await ReceptionController._resolveScope(req.query, req.workspaceId);
+            const receptions = await Reception.findAll(
+                { ...req.query, destination: scope.destination, id_entrepot: scope.id_entrepot },
+                req.workspaceId
+            );
 
             const exportData = receptions.map(r => ({
                 id: r.id_reception,
@@ -420,13 +301,9 @@ class ReceptionController {
             });
 
         } catch (error) {
-            console.error('❌ Export error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de l\'export des réceptions'
-            });
+            return ReceptionController._sendError(res, error, "Erreur lors de l'export des réceptions");
         }
     }
 }
 
-export default ReceptionController; 
+export default ReceptionController;

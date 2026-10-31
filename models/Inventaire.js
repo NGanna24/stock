@@ -40,7 +40,6 @@ class Inventaire {
             libelle,
             date_debut,
             type_inventaire = 'complet',
-            id_emplacement = null,
             notes = null,
             id_utilisateur
         } = data;
@@ -61,15 +60,14 @@ class Inventaire {
             const [result] = await connection.execute(
                 `INSERT INTO inventaires (
                     id_utilisateur, reference, libelle, date_debut,
-                    type_inventaire, id_emplacement, statut, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, 'planifie', ?)`,
+                    type_inventaire, statut, notes
+                ) VALUES (?, ?, ?, ?, ?, 'planifie', ?)`,
                 [
                     id_utilisateur,
                     reference,
                     libelle.trim(),
                     date_debut,
                     type_inventaire,
-                    id_emplacement,
                     notes
                 ]
             );
@@ -110,22 +108,13 @@ class Inventaire {
                 throw new Error(`Impossible de démarrer un inventaire avec statut "${inventaire.statut}"`);
             }
 
-            let produitsQuery = `
-                SELECT id_produit, nom, quantite_stock, emplacement
+            const produitsQuery = `
+                SELECT id_produit, nom, quantite_stock
                 FROM produits
                 WHERE id_utilisateur = ?
+                ORDER BY nom ASC
             `;
             const params = [id_utilisateur];
-
-            if (inventaire.type_inventaire === 'partiel' && inventaire.id_emplacement) {
-                produitsQuery += ` AND emplacement = (
-                    SELECT code FROM emplacements
-                    WHERE id_emplacement = ?
-                )`;
-                params.push(inventaire.id_emplacement);
-            }
-
-            produitsQuery += ' ORDER BY nom ASC';
 
             const [produits] = await connection.execute(produitsQuery, params);
 
@@ -136,13 +125,12 @@ class Inventaire {
             for (const p of produits) {
                 await connection.execute(
                     `INSERT INTO inventaire_lignes (
-                        id_inventaire, id_produit, id_emplacement,
+                        id_inventaire, id_produit,
                         quantite_theorique, quantite_reelle, ecart
-                    ) VALUES (?, ?, ?, ?, 0, 0)`,
+                    ) VALUES (?, ?, ?, 0, 0)`,
                     [
                         id,
                         p.id_produit,
-                        inventaire.id_emplacement || null,
                         parseFloat(p.quantite_stock) || 0
                     ]
                 );
@@ -309,9 +297,14 @@ class Inventaire {
             }
 
             const [lignes] = await connection.execute(
-                `SELECT * FROM inventaire_lignes WHERE id_inventaire = ?`,
+                `SELECT * FROM inventaire_lignes
+                 WHERE id_inventaire = ? AND date_scannage IS NOT NULL`,
                 [id]
             );
+
+            if (lignes.length === 0) {
+                throw new Error("Saisissez au moins un produit avant de valider l'inventaire");
+            }
 
             let nbAjustements = 0;
             let valeurEcartTotal = 0;
@@ -489,10 +482,8 @@ class Inventaire {
 
         const [rows] = await pool.execute(
             `SELECT i.*,
-                    e.code AS emplacement_nom,
                     u.fullname AS utilisateur_nom
              FROM inventaires i
-             LEFT JOIN emplacements e ON i.id_emplacement = e.id_emplacement
              LEFT JOIN utilisateurs u ON i.id_utilisateur = u.id_utilisateur
              WHERE i.id_inventaire = ?
                AND i.id_utilisateur = ?`,
@@ -599,14 +590,12 @@ class Inventaire {
 
         let query = `
             SELECT i.*,
-                   e.code AS emplacement_nom,
                    u.fullname AS utilisateur_nom,
                    (SELECT COUNT(*) FROM inventaire_lignes
                     WHERE id_inventaire = i.id_inventaire) AS nb_lignes,
                    (SELECT COUNT(*) FROM inventaire_lignes
                     WHERE id_inventaire = i.id_inventaire AND ecart <> 0) AS nb_ecarts
             FROM inventaires i
-            LEFT JOIN emplacements e ON i.id_emplacement = e.id_emplacement
             LEFT JOIN utilisateurs u ON i.id_utilisateur = u.id_utilisateur
             WHERE i.id_utilisateur = ?
         `;

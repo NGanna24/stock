@@ -2,6 +2,7 @@
 import express from 'express';
 import MagasinController from '../controllers/MagasinController.js';
 import { authenticateToken } from '../middleware/middleware.js';
+import TransfertController from '../controllers/TransfertStockController.js';
 
 const router = express.Router();
 
@@ -21,7 +22,7 @@ router.post('/geocoder',    authenticateToken, MagasinController.geocoder);
 // 🆕 Magasins proches (⚠️ AVANT /:id)
 router.get('/proches',      authenticateToken, MagasinController.getProches);
 
-// Magasin par ID (⚠️ DOIT ÊTRE EN DERNIER)
 router.get('/:id',          authenticateToken, MagasinController.getById);
+
 
 export default router;

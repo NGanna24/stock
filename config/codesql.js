@@ -1,7 +1,23 @@
 // config/schema.sql.js
+//
+// ORDRE DE CRÉATION (important : une clé étrangère exige que la table cible existe) :
+//   1. Utilisateurs, magasins, entrepôts, emplacements, membres
+//   2. Référentiels (catégories, marques, modèles, unités, fournisseurs)
+//   3. Catalogues : produits (magasin) puis produits_entrepot (entrepôt)
+//   4. Unités de vente : magasin puis entrepôt
+//   5. Achats, réceptions, ventes, retours, opérations de stock MAGASIN
+//   6. Mouvements, transferts (pont entrepôt -> magasin)
+//   7. Opérations de stock ENTREPÔT (après transferts_stock)
+//   8. Vues
 const creation_tables = `-- =============================================================================
 -- BASE DE DONNÉES STOCK - SCRIPT DE CRÉATION COMPLET MULTI-TENANT
--- Chaque table est isolée par id_utilisateur
+-- Chaque compte (id_utilisateur) a son propre catalogue et son propre stock.
+-- MAGASIN et ENTREPÔT sont deux mondes séparés :
+--   magasin  : produits, unites_vente, entrees_stock, sorties_stock, ...
+--   entrepôt : produits_entrepot, unites_vente_entrepot, *_entrepot, emplacements
+-- Le SEUL pont entre les deux est la table transferts_stock.
+-- L'entrepôt est OPTIONNEL : un client sans entrepôt n'a aucune ligne dans les
+-- tables d'entrepôt, et aucune table du magasin n'en dépend.
 -- =============================================================================
 
 -- =============================================================================
@@ -32,6 +48,7 @@ CREATE TABLE IF NOT EXISTS utilisateurs (
     INDEX idx_slug (slug),
     FOREIGN KEY (id_role) REFERENCES roles(id_role) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- =============================================================================
 -- TABLE SUPER_ADMIN — accès propriétaire du logiciel
 -- Séparée des utilisateurs tenants pour isolation totale
@@ -67,11 +84,11 @@ CREATE TABLE IF NOT EXISTS super_admins (
 -- Concerne UNIQUEMENT les utilisateurs (patrons)
 -- =============================================================================
 
-CREATE TABLE IF NOT EXISTS password_reset_otp ( 
+CREATE TABLE IF NOT EXISTS password_reset_otp (
     id_otp INT PRIMARY KEY AUTO_INCREMENT,
     email VARCHAR(255) NOT NULL,
     code_otp VARCHAR(10) NOT NULL,
-    id_utilisateur INT NOT NULL, 
+    id_utilisateur INT NOT NULL,
     tentatives INT DEFAULT 0,
     utilise BOOLEAN DEFAULT FALSE,
     expire_at DATETIME NOT NULL,
@@ -86,6 +103,9 @@ CREATE TABLE IF NOT EXISTS password_reset_otp (
     FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- =============================================================================
+-- MAGASINS ET EMPLOYÉS
+-- =============================================================================
 
 CREATE TABLE IF NOT EXISTS magasins (
     id_magasin INT PRIMARY KEY AUTO_INCREMENT,
@@ -105,7 +125,6 @@ CREATE TABLE IF NOT EXISTS magasins (
     telephone2 VARCHAR(20),
     whatsapp VARCHAR(20),
     email VARCHAR(150),
-
 
     -- ========== GÉOLOCALISATION DU MAGASIN ==========
     latitude DECIMAL(10, 8) NULL,
@@ -135,7 +154,7 @@ CREATE TABLE IF NOT EXISTS employes (
     id_magasin INT NOT NULL,              -- magasin où il travaille
     id_role INT NOT NULL,                 -- caissier, magasinier...
     fullname VARCHAR(100) NOT NULL,
-    slug VARCHAR(100) NOT NULL, 
+    slug VARCHAR(100) NOT NULL,
     telephone VARCHAR(20) NOT NULL,
     password VARCHAR(255) NOT NULL,
     actif BOOLEAN DEFAULT TRUE,
@@ -154,7 +173,59 @@ CREATE TABLE IF NOT EXISTS employes (
     FOREIGN KEY (id_magasin) REFERENCES magasins(id_magasin) ON DELETE CASCADE,
     FOREIGN KEY (id_role) REFERENCES roles(id_role) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
- 
+
+-- =============================================================================
+-- ENTREPÔTS (optionnels), EMPLACEMENTS et MEMBRES
+-- Les emplacements appartiennent à l'ENTREPÔT uniquement.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS entrepots (
+    id_entrepot INT PRIMARY KEY AUTO_INCREMENT,
+    nom VARCHAR(100) NOT NULL,
+    adresse TEXT,
+    ville VARCHAR(100),
+    pays VARCHAR(100),
+    code_postal VARCHAR(20),
+    code_acces VARCHAR(20) NOT NULL UNIQUE,
+    id_utilisateur_proprietaire INT NOT NULL,
+    actif BOOLEAN DEFAULT TRUE,
+    date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
+    date_modification DATETIME ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_code_acces (code_acces),
+    INDEX idx_proprietaire (id_utilisateur_proprietaire),
+    INDEX idx_actif (actif),
+    FOREIGN KEY (id_utilisateur_proprietaire)
+        REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS emplacements (
+    id_emplacement INT PRIMARY KEY AUTO_INCREMENT,
+    id_entrepot INT NOT NULL,
+    code VARCHAR(50) NOT NULL,
+    rayon VARCHAR(50),
+    etagere VARCHAR(50),
+    description TEXT,
+    INDEX idx_emp_entrepot (id_entrepot),
+    INDEX idx_emp_code (code),
+    UNIQUE KEY uq_emp_code (id_entrepot, code),
+    CONSTRAINT fk_emp_entrepot FOREIGN KEY (id_entrepot) REFERENCES entrepots(id_entrepot) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS membres_entrepot (
+    id_membre INT PRIMARY KEY AUTO_INCREMENT,
+    id_entrepot INT NOT NULL,
+    id_utilisateur INT NOT NULL,
+    role_membre ENUM('proprietaire', 'membre') DEFAULT 'membre',
+    actif BOOLEAN DEFAULT TRUE,
+    date_ajout DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_entrepot (id_entrepot),
+    INDEX idx_user (id_utilisateur),
+    INDEX idx_role (role_membre),
+    UNIQUE KEY unique_entrepot_user (id_entrepot, id_utilisateur),
+    FOREIGN KEY (id_entrepot) REFERENCES entrepots(id_entrepot) ON DELETE CASCADE,
+    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- =============================================================================
 -- CLIENTS
 -- =============================================================================
@@ -180,7 +251,7 @@ CREATE TABLE IF NOT EXISTS clients (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
--- PRODUITS - CATÉGORIES, MARQUES, MODÈLES, UNITÉS
+-- RÉFÉRENTIELS - CATÉGORIES, MARQUES, MODÈLES, UNITÉS, FOURNISSEURS
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS categories (
@@ -250,6 +321,10 @@ CREATE TABLE IF NOT EXISTS fournisseurs (
     FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- =============================================================================
+-- PRODUITS MAGASIN
+-- =============================================================================
+
 CREATE TABLE IF NOT EXISTS produits (
     id_produit INT PRIMARY KEY AUTO_INCREMENT,
     id_utilisateur INT NOT NULL,
@@ -290,10 +365,70 @@ CREATE TABLE IF NOT EXISTS produits (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
--- UNITÉS DE VENTE (conditionnements : carton, palette, sachet...)
+-- PRODUITS ENTREPÔT (catalogue indépendant du catalogue magasin)
+-- Le doublon "nom + marque + modèle" est contrôlé par le code (produits actifs).
+-- Pas de contrainte UNIQUE en base : MySQL interdit une colonne générée dont les
+-- colonnes de base ont une clé étrangère en CASCADE / SET NULL.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS produits_entrepot (
+    id_produit_entrepot INT PRIMARY KEY AUTO_INCREMENT,
+
+    id_entrepot    INT NOT NULL,
+    id_utilisateur INT NOT NULL,              -- créateur
+
+    nom         VARCHAR(200) NOT NULL,
+    description TEXT,
+
+    id_categorie   INT NULL,
+    id_marque      INT NULL,
+    id_modele      INT NULL,
+    id_unite       INT NULL,                  -- unité de base
+    id_fournisseur INT NULL,
+
+    -- Prix en UNITÉ DE BASE
+    prix_achat DECIMAL(15,2) NOT NULL DEFAULT 0,
+    prix_vente DECIMAL(15,2) NOT NULL DEFAULT 0,
+
+    -- Stock en UNITÉ DE BASE
+    quantite_stock    DECIMAL(15,2) NOT NULL DEFAULT 0,
+    quantite_minimale DECIMAL(15,2) NOT NULL DEFAULT 0,
+    quantite_maximale DECIMAL(15,2) NOT NULL DEFAULT 0,
+
+    emplacement VARCHAR(100) NULL,
+    rayon       VARCHAR(50)  NULL,
+    etagere     VARCHAR(50)  NULL,
+
+    actif BOOLEAN NOT NULL DEFAULT TRUE,
+
+    date_creation     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    date_modification DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_pe_entrepot    (id_entrepot),
+    INDEX idx_pe_utilisateur (id_utilisateur),
+    INDEX idx_pe_nom         (nom),
+    INDEX idx_pe_categorie   (id_categorie),
+    INDEX idx_pe_marque      (id_marque),
+    INDEX idx_pe_modele      (id_modele),
+    INDEX idx_pe_fournisseur (id_fournisseur),
+    INDEX idx_pe_actif       (actif),
+    INDEX idx_pe_scope       (id_entrepot, nom),
+
+    CONSTRAINT fk_pe_entrepot    FOREIGN KEY (id_entrepot)    REFERENCES entrepots(id_entrepot)       ON DELETE CASCADE,
+    CONSTRAINT fk_pe_utilisateur FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
+    CONSTRAINT fk_pe_categorie   FOREIGN KEY (id_categorie)   REFERENCES categories(id_categorie)     ON DELETE SET NULL,
+    CONSTRAINT fk_pe_marque      FOREIGN KEY (id_marque)      REFERENCES marques(id_marque)           ON DELETE SET NULL,
+    CONSTRAINT fk_pe_modele      FOREIGN KEY (id_modele)      REFERENCES modeles(id_modele)           ON DELETE SET NULL,
+    CONSTRAINT fk_pe_unite       FOREIGN KEY (id_unite)       REFERENCES unites(id_unite)             ON DELETE SET NULL,
+    CONSTRAINT fk_pe_fournisseur FOREIGN KEY (id_fournisseur) REFERENCES fournisseurs(id_fournisseur) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =============================================================================
+-- UNITÉS DE VENTE MAGASIN (conditionnements : carton, palette, sachet...)
 -- quantite_base = nombre d'unités de base dans ce conditionnement
 -- Ex: carton de 12 bidons → quantite_base = 12
 -- =============================================================================
+
 CREATE TABLE IF NOT EXISTS unites_vente (
     id_unite_vente INT PRIMARY KEY AUTO_INCREMENT,
     id_produit INT NOT NULL,
@@ -312,7 +447,36 @@ CREATE TABLE IF NOT EXISTS unites_vente (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
--- COMMANDES D'ACHAT
+-- UNITÉS DE VENTE ENTREPÔT
+-- Le nom d'une unité est unique parmi les unités ACTIVES seulement : on peut
+-- supprimer (actif = 0) puis recréer "Carton" sans erreur.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS unites_vente_entrepot (
+    id_unite_vente_entrepot INT PRIMARY KEY AUTO_INCREMENT,
+    id_produit_entrepot     INT NOT NULL,
+
+    nom           VARCHAR(50)   NOT NULL,
+    quantite_base DECIMAL(15,2) NOT NULL DEFAULT 1,   -- nb d'unités de base
+    prix_vente    DECIMAL(15,2) NOT NULL DEFAULT 0,
+    prix_achat    DECIMAL(15,2) NOT NULL DEFAULT 0,
+    est_principal BOOLEAN NOT NULL DEFAULT FALSE,
+    actif         BOOLEAN NOT NULL DEFAULT TRUE,
+
+    date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    nom_actif VARCHAR(50) GENERATED ALWAYS AS (IF(actif = 1, LOWER(TRIM(nom)), NULL)) STORED,
+
+    INDEX idx_uve_produit   (id_produit_entrepot),
+    INDEX idx_uve_principal (est_principal),
+    UNIQUE KEY uq_uve_nom_actif (id_produit_entrepot, nom_actif),
+
+    CONSTRAINT fk_uve_produit FOREIGN KEY (id_produit_entrepot)
+        REFERENCES produits_entrepot(id_produit_entrepot) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =============================================================================
+-- COMMANDES D'ACHAT (magasin)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS commandes_achat (
@@ -321,6 +485,9 @@ CREATE TABLE IF NOT EXISTS commandes_achat (
     numero_commande VARCHAR(50) NOT NULL,
     date_commande DATE NOT NULL,
     id_fournisseur INT NOT NULL,
+    -- Livraison : 'magasin' (défaut) ou 'entrepot' (réservé au propriétaire de l'entrepôt)
+    destination ENUM('magasin', 'entrepot') NOT NULL DEFAULT 'magasin',
+    id_entrepot INT NULL,
     statut ENUM('en_attente', 'envoyee', 'partiellement_recue', 'recue', 'annulee') DEFAULT 'en_attente',
     montant_total DECIMAL(15, 2) DEFAULT 0.00,
     notes TEXT,
@@ -331,17 +498,22 @@ CREATE TABLE IF NOT EXISTS commandes_achat (
     INDEX idx_statut (statut),
     INDEX idx_date (date_commande),
     INDEX idx_utilisateur (id_utilisateur),
+    INDEX idx_ca_destination (id_utilisateur, destination, id_entrepot),
     UNIQUE KEY unique_numero_par_user (numero_commande, id_utilisateur),
     FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
-    FOREIGN KEY (id_fournisseur) REFERENCES fournisseurs(id_fournisseur) ON DELETE RESTRICT
+    FOREIGN KEY (id_fournisseur) REFERENCES fournisseurs(id_fournisseur) ON DELETE RESTRICT,
+    CONSTRAINT fk_ca_entrepot FOREIGN KEY (id_entrepot) REFERENCES entrepots(id_entrepot) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 
 CREATE TABLE IF NOT EXISTS ligne_commande_achat (
     id_ligne_achat INT PRIMARY KEY AUTO_INCREMENT,
     id_commande_achat INT NOT NULL,
-    id_produit INT NOT NULL,
+    -- Magasin : id_produit / id_unite_vente.  Entrepôt : id_produit_entrepot / id_unite_vente_entrepot.
+    -- Un seul des deux produits est renseigné (contrôlé par le code, pas de CHECK : voir migration).
+    id_produit INT NULL,
+    id_produit_entrepot INT NULL,
     id_unite_vente INT,
+    id_unite_vente_entrepot INT NULL,
     nom_unite_vente VARCHAR(50) DEFAULT 'Unité',
     quantite_base DECIMAL(15, 2) DEFAULT 1,
     quantite DECIMAL(15, 2) NOT NULL,
@@ -357,12 +529,16 @@ CREATE TABLE IF NOT EXISTS ligne_commande_achat (
     INDEX idx_commande (id_commande_achat),
     INDEX idx_produit (id_produit),
     INDEX idx_unite_vente (id_unite_vente),
+    INDEX idx_lca_produit_entrepot (id_produit_entrepot),
     FOREIGN KEY (id_commande_achat) REFERENCES commandes_achat(id_commande_achat) ON DELETE CASCADE,
     FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE,
-    FOREIGN KEY (id_unite_vente) REFERENCES unites_vente(id_unite_vente) ON DELETE SET NULL
+    FOREIGN KEY (id_unite_vente) REFERENCES unites_vente(id_unite_vente) ON DELETE SET NULL,
+    CONSTRAINT fk_lca_produit_entrepot FOREIGN KEY (id_produit_entrepot) REFERENCES produits_entrepot(id_produit_entrepot) ON DELETE CASCADE,
+    CONSTRAINT fk_lca_unite_entrepot FOREIGN KEY (id_unite_vente_entrepot) REFERENCES unites_vente_entrepot(id_unite_vente_entrepot) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- =============================================================================
--- RÉCEPTIONS
+-- RÉCEPTIONS (magasin)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS receptions (
@@ -371,6 +547,8 @@ CREATE TABLE IF NOT EXISTS receptions (
     numero_reception VARCHAR(50) NOT NULL,
     date_reception DATE NOT NULL,
     id_commande_achat INT,
+    destination ENUM('magasin', 'entrepot') NOT NULL DEFAULT 'magasin',
+    id_entrepot INT NULL,
     statut ENUM('en_attente', 'partielle', 'complete', 'annulee') DEFAULT 'en_attente',
     montant_total DECIMAL(15, 2) DEFAULT 0.00,
     notes TEXT,
@@ -381,19 +559,24 @@ CREATE TABLE IF NOT EXISTS receptions (
     INDEX idx_statut (statut),
     INDEX idx_date (date_reception),
     INDEX idx_utilisateur (id_utilisateur),
+    INDEX idx_rec_destination (id_utilisateur, destination, id_entrepot),
     UNIQUE KEY unique_numero_par_user (numero_reception, id_utilisateur),
     FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
-    FOREIGN KEY (id_commande_achat) REFERENCES commandes_achat(id_commande_achat) ON DELETE SET NULL
+    FOREIGN KEY (id_commande_achat) REFERENCES commandes_achat(id_commande_achat) ON DELETE SET NULL,
+    CONSTRAINT fk_rec_entrepot FOREIGN KEY (id_entrepot) REFERENCES entrepots(id_entrepot) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS reception_lignes (
     id_ligne_reception INT PRIMARY KEY AUTO_INCREMENT,
     id_reception INT NOT NULL,
-    id_produit INT NOT NULL,
+    id_produit INT NULL,
+    id_produit_entrepot INT NULL,
     id_ligne_achat INT,
 
     -- ✅ Traçabilité de l'unité de vente
     id_unite_vente INT,
+    id_unite_vente_entrepot INT NULL,
+    id_emplacement INT NULL,
     nom_unite_vente VARCHAR(50) DEFAULT 'Unité',
     quantite_base DECIMAL(15, 2) DEFAULT 1,
     quantite_totale_base DECIMAL(15, 2) DEFAULT 0,
@@ -409,21 +592,26 @@ CREATE TABLE IF NOT EXISTS reception_lignes (
 
     etat_marchandise ENUM('bon', 'endommager', 'manquant', 'partiel') DEFAULT 'bon',
     num_lot VARCHAR(100),
-    date_peremption DATE, 
+    date_peremption DATE,
     notes TEXT,
 
     INDEX idx_reception (id_reception),
     INDEX idx_produit (id_produit),
-    INDEX idx_ligne_achat (id_ligne_achat), 
+    INDEX idx_ligne_achat (id_ligne_achat),
     INDEX idx_unite_vente (id_unite_vente),
+    INDEX idx_rl_produit_entrepot (id_produit_entrepot),
 
     FOREIGN KEY (id_reception) REFERENCES receptions(id_reception) ON DELETE CASCADE,
     FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE,
     FOREIGN KEY (id_ligne_achat) REFERENCES ligne_commande_achat(id_ligne_achat) ON DELETE SET NULL,
-    FOREIGN KEY (id_unite_vente) REFERENCES unites_vente(id_unite_vente) ON DELETE SET NULL
+    FOREIGN KEY (id_unite_vente) REFERENCES unites_vente(id_unite_vente) ON DELETE SET NULL,
+    CONSTRAINT fk_rl_produit_entrepot FOREIGN KEY (id_produit_entrepot) REFERENCES produits_entrepot(id_produit_entrepot) ON DELETE CASCADE,
+    CONSTRAINT fk_rl_unite_entrepot FOREIGN KEY (id_unite_vente_entrepot) REFERENCES unites_vente_entrepot(id_unite_vente_entrepot) ON DELETE SET NULL,
+    CONSTRAINT fk_rl_emplacement FOREIGN KEY (id_emplacement) REFERENCES emplacements(id_emplacement) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- =============================================================================
--- RETOURS FOURNISSEURS
+-- RETOURS FOURNISSEURS (magasin)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS retours_fournisseurs (
@@ -432,6 +620,8 @@ CREATE TABLE IF NOT EXISTS retours_fournisseurs (
     numero_retour VARCHAR(50) NOT NULL,
     date_retour DATE NOT NULL,
     id_fournisseur INT NOT NULL,
+    destination ENUM('magasin', 'entrepot') NOT NULL DEFAULT 'magasin',
+    id_entrepot INT NULL,
     id_commande_achat INT,
     id_reception INT,
     statut ENUM('en_attente', 'envoye', 'recu_par_fournisseur', 'traite', 'annule') DEFAULT 'en_attente',
@@ -445,6 +635,7 @@ CREATE TABLE IF NOT EXISTS retours_fournisseurs (
     INDEX idx_fournisseur (id_fournisseur),
     INDEX idx_commande (id_commande_achat),
     INDEX idx_reception (id_reception),
+    INDEX idx_rf_destination (id_utilisateur, destination, id_entrepot),
     INDEX idx_statut (statut),
     INDEX idx_date (date_retour),
     INDEX idx_utilisateur (id_utilisateur),
@@ -452,13 +643,15 @@ CREATE TABLE IF NOT EXISTS retours_fournisseurs (
     FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
     FOREIGN KEY (id_fournisseur) REFERENCES fournisseurs(id_fournisseur) ON DELETE RESTRICT,
     FOREIGN KEY (id_commande_achat) REFERENCES commandes_achat(id_commande_achat) ON DELETE SET NULL,
-    FOREIGN KEY (id_reception) REFERENCES receptions(id_reception) ON DELETE SET NULL
+    FOREIGN KEY (id_reception) REFERENCES receptions(id_reception) ON DELETE SET NULL,
+    CONSTRAINT fk_rf_entrepot FOREIGN KEY (id_entrepot) REFERENCES entrepots(id_entrepot) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS retour_lignes (
     id_ligne_retour INT PRIMARY KEY AUTO_INCREMENT,
     id_retour INT NOT NULL,
-    id_produit INT NOT NULL,
+    id_produit INT NULL,
+    id_produit_entrepot INT NULL,
     id_ligne_achat INT,
     quantite DECIMAL(15, 2) NOT NULL,
     prix_achat DECIMAL(15, 2) NOT NULL,
@@ -470,13 +663,15 @@ CREATE TABLE IF NOT EXISTS retour_lignes (
     INDEX idx_retour (id_retour),
     INDEX idx_produit (id_produit),
     INDEX idx_ligne_achat (id_ligne_achat),
+    INDEX idx_rtl_produit_entrepot (id_produit_entrepot),
     FOREIGN KEY (id_retour) REFERENCES retours_fournisseurs(id_retour) ON DELETE CASCADE,
     FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE,
+    CONSTRAINT fk_rtl_produit_entrepot FOREIGN KEY (id_produit_entrepot) REFERENCES produits_entrepot(id_produit_entrepot) ON DELETE CASCADE,
     FOREIGN KEY (id_ligne_achat) REFERENCES ligne_commande_achat(id_ligne_achat) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
--- COMMANDES DE VENTE ET FACTURES
+-- COMMANDES DE VENTE ET FACTURES (magasin)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS commandes_vente (
@@ -511,7 +706,7 @@ CREATE TABLE IF NOT EXISTS ligne_commande_vente (
     id_produit INT NOT NULL,
     id_unite_vente INT,
     nom_unite_vente VARCHAR(50) DEFAULT 'Unité',
-    quantite_base DECIMAL(15, 2) DEFAULT 1,  
+    quantite_base DECIMAL(15, 2) DEFAULT 1,
     quantite_retournee_base DECIMAL(15, 2) DEFAULT 0,
     quantite DECIMAL(15, 2) NOT NULL,
     prix_vente DECIMAL(15, 2) NOT NULL,
@@ -589,7 +784,7 @@ CREATE TABLE IF NOT EXISTS reglements (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
--- RETOURS CLIENTS
+-- RETOURS CLIENTS (magasin)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS retours_clients (
@@ -659,43 +854,11 @@ CREATE TABLE IF NOT EXISTS retour_client_lignes (
     FOREIGN KEY (id_ligne_commande_vente) REFERENCES ligne_commande_vente(id_ligne_vente) ON DELETE SET NULL,
     FOREIGN KEY (id_unite_vente) REFERENCES unites_vente(id_unite_vente) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
--- =============================================================================
--- ENTREPÔTS ET EMPLACEMENTS
--- =============================================================================
-
-CREATE TABLE IF NOT EXISTS entrepots (
-    id_entrepot INT PRIMARY KEY AUTO_INCREMENT,
-    id_utilisateur INT NOT NULL,
-    nom VARCHAR(100) NOT NULL,
-    adresse TEXT,
-    ville VARCHAR(100),
-    pays VARCHAR(100),
-    code_postal VARCHAR(20),
-    actif BOOLEAN DEFAULT TRUE,
-    date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_nom (nom),
-    INDEX idx_utilisateur (id_utilisateur),
-    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS emplacements (
-    id_emplacement INT PRIMARY KEY AUTO_INCREMENT,
-    id_entrepot INT NOT NULL,
-    code VARCHAR(50) NOT NULL,
-    rayon VARCHAR(50),
-    etagere VARCHAR(50),
-    description TEXT,
-    INDEX idx_entrepot (id_entrepot),
-    INDEX idx_code (code),
-    FOREIGN KEY (id_entrepot) REFERENCES entrepots(id_entrepot) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
--- MOUVEMENTS DE STOCK
--- ✅ CORRIGÉ : entrees_stock et sorties_stock stockent maintenant :
---    - quantite (en unité de vente : ex: 10 cartons)
---    - quantite_totale_base (en unité de base : ex: 120 bidons)
---    - id_unite_vente, nom_unite_vente, quantite_base
+-- OPÉRATIONS DE STOCK MAGASIN
+-- (entrées, sorties, ajustements, inventaires, alertes)
+-- Indépendantes de l'entrepôt : aucune référence à emplacements / entrepots.
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS entrees_stock (
@@ -705,14 +868,13 @@ CREATE TABLE IF NOT EXISTS entrees_stock (
     id_produit INT NOT NULL,
     id_reception INT,
 
-    -- ✅ NOUVEAU : traçabilité de l'unité
+    -- ✅ Traçabilité de l'unité
     id_unite_vente INT,
     nom_unite_vente VARCHAR(50) DEFAULT 'Unité',
     quantite_base DECIMAL(15, 2) DEFAULT 1,
     quantite DECIMAL(15, 2) NOT NULL,
     quantite_totale_base DECIMAL(15, 2) NOT NULL,
 
-    id_emplacement INT,
     num_lot VARCHAR(100),
     date_peremption DATE,
     notes TEXT,
@@ -721,7 +883,6 @@ CREATE TABLE IF NOT EXISTS entrees_stock (
     INDEX idx_reference (reference),
     INDEX idx_produit (id_produit),
     INDEX idx_reception (id_reception),
-    INDEX idx_emplacement (id_emplacement),
     INDEX idx_utilisateur (id_utilisateur),
     INDEX idx_unite_vente (id_unite_vente),
 
@@ -729,7 +890,6 @@ CREATE TABLE IF NOT EXISTS entrees_stock (
     FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
     FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE,
     FOREIGN KEY (id_reception) REFERENCES receptions(id_reception) ON DELETE SET NULL,
-    FOREIGN KEY (id_emplacement) REFERENCES emplacements(id_emplacement) ON DELETE SET NULL,
     FOREIGN KEY (id_unite_vente) REFERENCES unites_vente(id_unite_vente) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -740,7 +900,7 @@ CREATE TABLE IF NOT EXISTS sorties_stock (
     date_sortie DATE NOT NULL,
     id_produit INT NOT NULL,
 
-    -- ✅ NOUVEAU : traçabilité de l'unité
+    -- ✅ Traçabilité de l'unité
     id_unite_vente INT,
     nom_unite_vente VARCHAR(50) DEFAULT 'Unité',
     quantite_base DECIMAL(15, 2) DEFAULT 1,
@@ -749,7 +909,6 @@ CREATE TABLE IF NOT EXISTS sorties_stock (
 
     type_sortie ENUM('vente', 'retour_fournisseur', 'transfert', 'perte', 'casse', 'don') DEFAULT 'vente',
     id_commande_vente INT,
-    id_emplacement INT,
     notes TEXT,
     date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
 
@@ -765,37 +924,7 @@ CREATE TABLE IF NOT EXISTS sorties_stock (
     FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
     FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE,
     FOREIGN KEY (id_commande_vente) REFERENCES commandes_vente(id_commande) ON DELETE SET NULL,
-    FOREIGN KEY (id_emplacement) REFERENCES emplacements(id_emplacement) ON DELETE SET NULL,
     FOREIGN KEY (id_unite_vente) REFERENCES unites_vente(id_unite_vente) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS transferts_stock (
-    id_transfert INT PRIMARY KEY AUTO_INCREMENT,
-    id_utilisateur INT NOT NULL,
-    reference VARCHAR(50) NOT NULL,
-    date_transfert DATE NOT NULL,
-    id_produit INT NOT NULL,
-    quantite DECIMAL(15, 2) NOT NULL,
-    id_emplacement_source INT,
-    id_emplacement_destination INT,
-    motif VARCHAR(200),
-    notes TEXT,
-    statut ENUM('en_attente', 'en_cours', 'termine', 'annule') DEFAULT 'en_attente',
-    date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
-    date_validation DATETIME,
-    valide_par VARCHAR(100),
-    INDEX idx_reference (reference),
-    INDEX idx_produit (id_produit),
-    INDEX idx_source (id_emplacement_source),
-    INDEX idx_destination (id_emplacement_destination),
-    INDEX idx_statut (statut),
-    INDEX idx_date (date_transfert),
-    INDEX idx_utilisateur (id_utilisateur),
-    UNIQUE KEY unique_ref_par_user (reference, id_utilisateur),
-    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
-    FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE,
-    FOREIGN KEY (id_emplacement_source) REFERENCES emplacements(id_emplacement) ON DELETE SET NULL,
-    FOREIGN KEY (id_emplacement_destination) REFERENCES emplacements(id_emplacement) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS ajustements_stock (
@@ -807,7 +936,6 @@ CREATE TABLE IF NOT EXISTS ajustements_stock (
     quantite DECIMAL(15, 2) NOT NULL,
     ancienne_quantite DECIMAL(15, 2) DEFAULT 0,
     nouvelle_quantite DECIMAL(15, 2) DEFAULT 0,
-    id_emplacement INT,
     motif VARCHAR(200) NOT NULL,
     notes TEXT,
     date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -815,17 +943,15 @@ CREATE TABLE IF NOT EXISTS ajustements_stock (
     valide_par VARCHAR(100),
     INDEX idx_reference (reference),
     INDEX idx_produit (id_produit),
-    INDEX idx_emplacement (id_emplacement),
     INDEX idx_date (date_ajustement),
     INDEX idx_utilisateur (id_utilisateur),
     UNIQUE KEY unique_ref_par_user (reference, id_utilisateur),
     FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
-    FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE,
-    FOREIGN KEY (id_emplacement) REFERENCES emplacements(id_emplacement) ON DELETE SET NULL
+    FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
--- INVENTAIRES
+-- INVENTAIRES MAGASIN
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS inventaires (
@@ -836,7 +962,6 @@ CREATE TABLE IF NOT EXISTS inventaires (
     date_debut DATE NOT NULL,
     date_fin DATE,
     type_inventaire ENUM('complet', 'partiel', 'tournant') DEFAULT 'complet',
-    id_emplacement INT,
     statut ENUM('planifie', 'en_cours', 'termine', 'annule') DEFAULT 'planifie',
     notes TEXT,
     date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -844,18 +969,15 @@ CREATE TABLE IF NOT EXISTS inventaires (
     valide_par VARCHAR(100),
     INDEX idx_reference (reference),
     INDEX idx_statut (statut),
-    INDEX idx_emplacement (id_emplacement),
     INDEX idx_utilisateur (id_utilisateur),
     UNIQUE KEY unique_ref_par_user (reference, id_utilisateur),
-    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
-    FOREIGN KEY (id_emplacement) REFERENCES emplacements(id_emplacement) ON DELETE SET NULL
+    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS inventaire_lignes (
     id_ligne INT PRIMARY KEY AUTO_INCREMENT,
     id_inventaire INT NOT NULL,
     id_produit INT NOT NULL,
-    id_emplacement INT,
     quantite_theorique DECIMAL(15, 2) DEFAULT 0,
     quantite_reelle DECIMAL(15, 2) DEFAULT 0,
     ecart DECIMAL(15, 2) DEFAULT 0,
@@ -863,14 +985,12 @@ CREATE TABLE IF NOT EXISTS inventaire_lignes (
     date_scannage DATETIME,
     INDEX idx_inventaire (id_inventaire),
     INDEX idx_produit (id_produit),
-    INDEX idx_emplacement (id_emplacement),
     FOREIGN KEY (id_inventaire) REFERENCES inventaires(id_inventaire) ON DELETE CASCADE,
-    FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE,
-    FOREIGN KEY (id_emplacement) REFERENCES emplacements(id_emplacement) ON DELETE SET NULL
+    FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
--- ALERTES DE STOCK
+-- ALERTES DE STOCK (magasin)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS alertes_stock (
@@ -928,7 +1048,7 @@ CREATE TABLE IF NOT EXISTS depenses (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
--- HISTORIQUE DES MOUVEMENTS DE STOCK
+-- HISTORIQUE DES MOUVEMENTS DE STOCK MAGASIN
 -- Note : quantite est TOUJOURS en unité de base (ex: bidon)
 -- =============================================================================
 
@@ -953,21 +1073,283 @@ CREATE TABLE IF NOT EXISTS mouvements_stock (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
--- PRODUITS IMPORTÉS (YUXING)
+-- HISTORIQUE DES MOUVEMENTS DE STOCK ENTREPÔT
+-- Journal unique de chaque variation de stock de produits_entrepot.
 -- =============================================================================
 
-CREATE TABLE IF NOT EXISTS produits_yuxing (
-    code VARCHAR(200) NOT NULL,
-    designation TEXT,
-    caracteristiques TEXT,
-    categorie VARCHAR(100),
-    unite VARCHAR(50),
-    prix_le_plus_bas DECIMAL(15, 2) DEFAULT 0,
-    INDEX idx_code (code)
+CREATE TABLE IF NOT EXISTS mouvements_entrepot (
+    id_mouvement_entrepot INT PRIMARY KEY AUTO_INCREMENT,
+
+    id_entrepot         INT NOT NULL,
+    id_produit_entrepot INT NOT NULL,
+    id_utilisateur      INT NOT NULL,
+
+    type_mouvement ENUM(
+        'entree', 'sortie', 'ajustement',
+        'transfert_sortie', 'perte', 'inventaire'
+    ) NOT NULL,
+
+    -- Toujours en UNITÉ DE BASE
+    quantite          DECIMAL(15,2) NOT NULL,
+    ancienne_quantite DECIMAL(15,2) NOT NULL DEFAULT 0,
+    nouvelle_quantite DECIMAL(15,2) NOT NULL DEFAULT 0,
+
+    -- Traçabilité de la saisie (ex : 3 cartons de 12)
+    id_unite_vente_entrepot INT NULL,
+    nom_unite_vente         VARCHAR(50)   NULL DEFAULT 'Unité',
+    quantite_base           DECIMAL(15,2) NULL DEFAULT 1,
+    quantite_saisie         DECIMAL(15,2) NULL,
+
+    num_lot         VARCHAR(100) NULL,
+    date_peremption DATE NULL,
+
+    type_reference VARCHAR(50) NULL,          -- 'transfert', 'manuel', 'inventaire'...
+    id_reference   INT NULL,                  -- ex : id_transfert
+
+    notes          TEXT NULL,
+    date_mouvement DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_me_entrepot (id_entrepot),
+    INDEX idx_me_produit  (id_produit_entrepot),
+    INDEX idx_me_user     (id_utilisateur),
+    INDEX idx_me_type     (type_mouvement),
+    INDEX idx_me_date     (date_mouvement),
+    INDEX idx_me_ref      (type_reference, id_reference),
+    INDEX idx_me_histo    (id_entrepot, id_produit_entrepot, date_mouvement),
+
+    CONSTRAINT fk_me_entrepot FOREIGN KEY (id_entrepot)             REFERENCES entrepots(id_entrepot)                         ON DELETE CASCADE,
+    CONSTRAINT fk_me_produit  FOREIGN KEY (id_produit_entrepot)     REFERENCES produits_entrepot(id_produit_entrepot)         ON DELETE CASCADE,
+    CONSTRAINT fk_me_user     FOREIGN KEY (id_utilisateur)          REFERENCES utilisateurs(id_utilisateur)                   ON DELETE CASCADE,
+    CONSTRAINT fk_me_unite    FOREIGN KEY (id_unite_vente_entrepot) REFERENCES unites_vente_entrepot(id_unite_vente_entrepot) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
--- VUES POUR LES RAPPORTS
+-- TRANSFERTS ENTREPÔT -> MAGASIN (le seul pont entre les deux mondes)
+--   Source      : un produit d'ENTREPÔT
+--   Destination : un compte (id_utilisateur_destination) et son magasin.
+--                 id_produit_destination (produits.id_produit) est renseigné à
+--                 la validation.
+-- Le stock de l'entrepôt ne baisse qu'à la validation du transfert.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS transferts_stock (
+    id_transfert     INT PRIMARY KEY AUTO_INCREMENT,
+    numero_transfert VARCHAR(50) NOT NULL UNIQUE,
+    numero_lot       VARCHAR(50) NULL,              -- même valeur pour toutes les lignes d'un panier (un seul bon)
+
+    -- Source
+    id_entrepot_source  INT NOT NULL,
+    id_produit_entrepot INT NOT NULL,
+
+    -- Destination
+    id_magasin_destination     INT NOT NULL,   -- magasin du DEMANDEUR
+    id_utilisateur_destination INT NOT NULL,   -- compte DEMANDEUR (reçoit dans son propre catalogue)
+    id_produit_destination     INT NULL,      -- produits.id_produit du demandeur (choisi à la demande si 'existant', rempli à l'approbation si 'creer')
+    mode_destination           ENUM('existant', 'creer') NOT NULL DEFAULT 'existant',
+    unite_forcee               TINYINT(1) NOT NULL DEFAULT 0,   -- le demandeur a accepté une unité de base différente
+
+    -- Quantité (toujours en UNITÉ DE BASE) + traçabilité de la saisie
+    quantite                DECIMAL(15,2) NOT NULL,
+    id_unite_vente_entrepot INT NULL,
+    nom_unite_vente         VARCHAR(50)   NOT NULL DEFAULT 'Unité',
+    quantite_base           DECIMAL(15,2) NOT NULL DEFAULT 1,
+    quantite_saisie         DECIMAL(15,2) NULL,
+
+    date_transfert  DATE NOT NULL,
+    date_creation   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    date_validation DATETIME NULL,
+
+    statut ENUM('en_attente', 'valide', 'refuse', 'annule') NOT NULL DEFAULT 'en_attente',
+    id_utilisateur_validateur INT NULL,
+    motif_refus VARCHAR(255) NULL,
+    motif       VARCHAR(200) NULL,
+    notes       TEXT NULL,
+
+    INDEX idx_ts_entrepot     (id_entrepot_source),
+    INDEX idx_ts_lot          (id_entrepot_source, numero_lot),
+    INDEX idx_ts_produit_ent  (id_produit_entrepot),
+    INDEX idx_ts_magasin      (id_magasin_destination),
+    INDEX idx_ts_produit_dest (id_produit_destination),
+    INDEX idx_ts_statut       (statut),
+    INDEX idx_ts_destinataire (id_utilisateur_destination),
+    INDEX idx_ts_date         (date_transfert),
+
+    CONSTRAINT fk_ts_entrepot     FOREIGN KEY (id_entrepot_source)         REFERENCES entrepots(id_entrepot)                         ON DELETE RESTRICT,
+    CONSTRAINT fk_ts_produit_ent  FOREIGN KEY (id_produit_entrepot)        REFERENCES produits_entrepot(id_produit_entrepot)         ON DELETE RESTRICT,
+    CONSTRAINT fk_ts_magasin      FOREIGN KEY (id_magasin_destination)     REFERENCES magasins(id_magasin)                           ON DELETE RESTRICT,
+    CONSTRAINT fk_ts_produit_dest FOREIGN KEY (id_produit_destination)     REFERENCES produits(id_produit)                           ON DELETE SET NULL,
+    CONSTRAINT fk_ts_unite        FOREIGN KEY (id_unite_vente_entrepot)    REFERENCES unites_vente_entrepot(id_unite_vente_entrepot) ON DELETE SET NULL,
+    CONSTRAINT fk_ts_user_dest    FOREIGN KEY (id_utilisateur_destination) REFERENCES utilisateurs(id_utilisateur)                   ON DELETE CASCADE,
+    CONSTRAINT fk_ts_user_valid   FOREIGN KEY (id_utilisateur_validateur)  REFERENCES utilisateurs(id_utilisateur)                   ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =============================================================================
+-- OPÉRATIONS DE STOCK ENTREPÔT
+-- (entrées, sorties, ajustements, inventaires) — indépendantes du magasin.
+-- Elles viennent APRÈS transferts_stock (sorties_stock_entrepot le référence).
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS entrees_stock_entrepot (
+    id_entree_entrepot INT PRIMARY KEY AUTO_INCREMENT,
+
+    id_entrepot         INT NOT NULL,
+    id_utilisateur      INT NOT NULL,              -- auteur
+    reference           VARCHAR(50) NOT NULL,
+    id_produit_entrepot INT NOT NULL,
+
+    -- Traçabilité du conditionnement saisi (ex : 3 cartons de 12)
+    id_unite_vente_entrepot INT NULL,
+    nom_unite_vente         VARCHAR(50)   NOT NULL DEFAULT 'Unité',
+    quantite_base           DECIMAL(15,2) NOT NULL DEFAULT 1,
+    quantite                DECIMAL(15,2) NOT NULL,   -- saisie (en unité de vente)
+    quantite_totale_base    DECIMAL(15,2) NOT NULL,   -- en UNITÉ DE BASE
+
+    id_emplacement  INT NULL,
+    num_lot         VARCHAR(100) NULL,
+    date_peremption DATE NULL,
+    notes           TEXT NULL,
+    date_entree     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_ee_entrepot    (id_entrepot),
+    INDEX idx_ee_produit     (id_produit_entrepot),
+    INDEX idx_ee_emplacement (id_emplacement),
+    INDEX idx_ee_user        (id_utilisateur),
+    INDEX idx_ee_date        (date_entree),
+    UNIQUE KEY uq_ee_ref (id_entrepot, reference),
+
+    CONSTRAINT fk_ee_entrepot    FOREIGN KEY (id_entrepot)             REFERENCES entrepots(id_entrepot)                         ON DELETE CASCADE,
+    CONSTRAINT fk_ee_user        FOREIGN KEY (id_utilisateur)          REFERENCES utilisateurs(id_utilisateur)                   ON DELETE CASCADE,
+    CONSTRAINT fk_ee_produit     FOREIGN KEY (id_produit_entrepot)     REFERENCES produits_entrepot(id_produit_entrepot)         ON DELETE CASCADE,
+    CONSTRAINT fk_ee_unite       FOREIGN KEY (id_unite_vente_entrepot) REFERENCES unites_vente_entrepot(id_unite_vente_entrepot) ON DELETE SET NULL,
+    CONSTRAINT fk_ee_emplacement FOREIGN KEY (id_emplacement)          REFERENCES emplacements(id_emplacement)                   ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS sorties_stock_entrepot (
+    id_sortie_entrepot INT PRIMARY KEY AUTO_INCREMENT,
+
+    id_entrepot         INT NOT NULL,
+    id_utilisateur      INT NOT NULL,
+    reference           VARCHAR(50) NOT NULL,
+    date_sortie         DATE NOT NULL,
+    id_produit_entrepot INT NOT NULL,
+
+    id_unite_vente_entrepot INT NULL,
+    nom_unite_vente         VARCHAR(50)   NOT NULL DEFAULT 'Unité',
+    quantite_base           DECIMAL(15,2) NOT NULL DEFAULT 1,
+    quantite                DECIMAL(15,2) NOT NULL,
+    quantite_totale_base    DECIMAL(15,2) NOT NULL,
+
+    type_sortie ENUM('transfert', 'perte', 'casse', 'don', 'retour_fournisseur', 'autre') NOT NULL DEFAULT 'transfert',
+    id_transfert   INT NULL,                       -- si la sortie vient d'un transfert
+    id_emplacement INT NULL,
+    notes          TEXT NULL,
+    date_creation  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_se_entrepot    (id_entrepot),
+    INDEX idx_se_produit     (id_produit_entrepot),
+    INDEX idx_se_transfert   (id_transfert),
+    INDEX idx_se_emplacement (id_emplacement),
+    INDEX idx_se_user        (id_utilisateur),
+    INDEX idx_se_type        (type_sortie),
+    INDEX idx_se_date        (date_sortie),
+    UNIQUE KEY uq_se_ref (id_entrepot, reference),
+
+    CONSTRAINT fk_se_entrepot    FOREIGN KEY (id_entrepot)             REFERENCES entrepots(id_entrepot)                         ON DELETE CASCADE,
+    CONSTRAINT fk_se_user        FOREIGN KEY (id_utilisateur)          REFERENCES utilisateurs(id_utilisateur)                   ON DELETE CASCADE,
+    CONSTRAINT fk_se_produit     FOREIGN KEY (id_produit_entrepot)     REFERENCES produits_entrepot(id_produit_entrepot)         ON DELETE CASCADE,
+    CONSTRAINT fk_se_unite       FOREIGN KEY (id_unite_vente_entrepot) REFERENCES unites_vente_entrepot(id_unite_vente_entrepot) ON DELETE SET NULL,
+    CONSTRAINT fk_se_transfert   FOREIGN KEY (id_transfert)            REFERENCES transferts_stock(id_transfert)                 ON DELETE SET NULL,
+    CONSTRAINT fk_se_emplacement FOREIGN KEY (id_emplacement)          REFERENCES emplacements(id_emplacement)                   ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS ajustements_stock_entrepot (
+    id_ajustement_entrepot INT PRIMARY KEY AUTO_INCREMENT,
+
+    id_entrepot         INT NOT NULL,
+    id_utilisateur      INT NOT NULL,
+    reference           VARCHAR(50) NOT NULL,
+    date_ajustement     DATE NOT NULL,
+    id_produit_entrepot INT NOT NULL,
+
+    -- En UNITÉ DE BASE
+    quantite          DECIMAL(15,2) NOT NULL,      -- écart (+/-)
+    ancienne_quantite DECIMAL(15,2) NOT NULL DEFAULT 0,
+    nouvelle_quantite DECIMAL(15,2) NOT NULL DEFAULT 0,
+
+    id_emplacement  INT NULL,
+    motif           VARCHAR(200) NOT NULL,
+    notes           TEXT NULL,
+    date_creation   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    date_validation DATETIME NULL,
+    valide_par      VARCHAR(100) NULL,
+
+    INDEX idx_ae_entrepot    (id_entrepot),
+    INDEX idx_ae_produit     (id_produit_entrepot),
+    INDEX idx_ae_emplacement (id_emplacement),
+    INDEX idx_ae_user        (id_utilisateur),
+    INDEX idx_ae_date        (date_ajustement),
+    UNIQUE KEY uq_ae_ref (id_entrepot, reference),
+
+    CONSTRAINT fk_ae_entrepot    FOREIGN KEY (id_entrepot)         REFERENCES entrepots(id_entrepot)                 ON DELETE CASCADE,
+    CONSTRAINT fk_ae_user        FOREIGN KEY (id_utilisateur)      REFERENCES utilisateurs(id_utilisateur)           ON DELETE CASCADE,
+    CONSTRAINT fk_ae_produit     FOREIGN KEY (id_produit_entrepot) REFERENCES produits_entrepot(id_produit_entrepot) ON DELETE CASCADE,
+    CONSTRAINT fk_ae_emplacement FOREIGN KEY (id_emplacement)      REFERENCES emplacements(id_emplacement)           ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS inventaires_entrepot (
+    id_inventaire_entrepot INT PRIMARY KEY AUTO_INCREMENT,
+
+    id_entrepot    INT NOT NULL,
+    id_utilisateur INT NOT NULL,
+    reference      VARCHAR(50)  NOT NULL,
+    libelle        VARCHAR(200) NOT NULL,
+    date_debut     DATE NOT NULL,
+    date_fin       DATE NULL,
+    type_inventaire ENUM('complet', 'partiel', 'tournant') NOT NULL DEFAULT 'complet',
+    id_emplacement INT NULL,                       -- si l'inventaire cible un emplacement
+    statut ENUM('planifie', 'en_cours', 'termine', 'annule') NOT NULL DEFAULT 'planifie',
+    notes           TEXT NULL,
+    date_creation   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    date_validation DATETIME NULL,
+    valide_par      VARCHAR(100) NULL,
+
+    INDEX idx_ie_entrepot    (id_entrepot),
+    INDEX idx_ie_emplacement (id_emplacement),
+    INDEX idx_ie_user        (id_utilisateur),
+    INDEX idx_ie_statut      (statut),
+    UNIQUE KEY uq_ie_ref (id_entrepot, reference),
+
+    CONSTRAINT fk_ie_entrepot    FOREIGN KEY (id_entrepot)    REFERENCES entrepots(id_entrepot)       ON DELETE CASCADE,
+    CONSTRAINT fk_ie_user        FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
+    CONSTRAINT fk_ie_emplacement FOREIGN KEY (id_emplacement) REFERENCES emplacements(id_emplacement) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS inventaire_lignes_entrepot (
+    id_ligne_entrepot      INT PRIMARY KEY AUTO_INCREMENT,
+    id_inventaire_entrepot INT NOT NULL,
+    id_produit_entrepot    INT NOT NULL,
+    id_emplacement         INT NULL,
+
+    -- En UNITÉ DE BASE
+    quantite_theorique DECIMAL(15,2) NOT NULL DEFAULT 0,
+    quantite_reelle    DECIMAL(15,2) NOT NULL DEFAULT 0,
+    ecart              DECIMAL(15,2) NOT NULL DEFAULT 0,
+
+    notes         TEXT NULL,
+    date_scannage DATETIME NULL,
+
+    INDEX idx_ile_inventaire  (id_inventaire_entrepot),
+    INDEX idx_ile_produit     (id_produit_entrepot),
+    INDEX idx_ile_emplacement (id_emplacement),
+    UNIQUE KEY uq_ile_inv_produit (id_inventaire_entrepot, id_produit_entrepot),
+
+    CONSTRAINT fk_ile_inventaire  FOREIGN KEY (id_inventaire_entrepot) REFERENCES inventaires_entrepot(id_inventaire_entrepot) ON DELETE CASCADE,
+    CONSTRAINT fk_ile_produit     FOREIGN KEY (id_produit_entrepot)    REFERENCES produits_entrepot(id_produit_entrepot)       ON DELETE CASCADE,
+    CONSTRAINT fk_ile_emplacement FOREIGN KEY (id_emplacement)         REFERENCES emplacements(id_emplacement)                 ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =============================================================================
+-- VUES POUR LES RAPPORTS (magasin)
 -- =============================================================================
 
 CREATE OR REPLACE VIEW v_produits_plus_vendus AS

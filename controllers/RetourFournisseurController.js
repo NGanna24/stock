@@ -1,464 +1,200 @@
 // controllers/RetourFournisseurController.js
+//
+// Retours fournisseurs (magasin ou entrepôt : ?destination=&id_entrepot=).
+// Pour un entrepôt, seul le PROPRIÉTAIRE peut créer / lister / gérer les retours.
+// `req.workspaceId` = compte (patron) : les employés agissent sous le compte de leur patron.
 import RetourFournisseur from '../models/RetourFournisseur.js';
-import Fournisseur from '../models/Fournisseur.js';
-import Produit from '../models/Produit.js';
+import CommandeAchat from '../models/CommandeAchat.js';
+
+const fail = (message, statusCode = 400) => {
+    const err = new Error(message);
+    err.statusCode = statusCode;
+    return err;
+};
+
+const STATUTS = ['en_attente', 'envoye', 'recu_par_fournisseur', 'traite', 'annule'];
 
 class RetourFournisseurController {
-    /**
-     * ============================================================
-     * POST /api/retours-fournisseurs
-     * Créer un nouveau retour fournisseur
-     * ============================================================
-     */
+    static _sendError(res, error, fallbackMessage) {
+        console.error('❌', error);
+        let status = error.statusCode;
+        if (!status) {
+            const msg = error.message || '';
+            const metier = ['non trouvé', 'obligatoire', 'positive', 'Impossible', 'insuffisant', 'trop élevée',
+                'Aucune quantité', 'déjà', 'invalide', 'traité', 'requis', 'inactif']
+                .some((m) => msg.includes(m));
+            status = metier ? 400 : 500;
+        }
+        return res.status(status).json({
+            success: false,
+            message: status === 500 && fallbackMessage ? fallbackMessage : (error.message || fallbackMessage)
+        });
+    }
+
+    /** Destination demandée -> { destination, id_entrepot } ; entrepôt = propriétaire obligatoire */
+    static async _resolveScope(source, id_utilisateur) {
+        const s = RetourFournisseur.scope(source?.destination, source?.id_entrepot);
+        if (s.destination === 'entrepot') {
+            if (!s.id_entrepot) throw fail("L'entrepôt est obligatoire");
+            if (!(await CommandeAchat.estProprietaireEntrepot(s.id_entrepot, id_utilisateur))) {
+                throw fail("Seul le propriétaire de l'entrepôt peut gérer les retours de cet entrepôt", 403);
+            }
+        }
+        return s;
+    }
+
+    /** Charge un retour du compte ; s'il vient d'un entrepôt, vérifie que le compte en est propriétaire */
+    static async _charger(id, id_utilisateur) {
+        const retour = await RetourFournisseur.findById(id, id_utilisateur);
+        if (!retour) throw fail('Retour non trouvé', 404);
+        if (retour.destination === 'entrepot'
+            && !(await CommandeAchat.estProprietaireEntrepot(retour.id_entrepot, id_utilisateur))) {
+            throw fail("Seul le propriétaire de l'entrepôt peut gérer les retours de cet entrepôt", 403);
+        }
+        return retour;
+    }
+
     static async create(req, res) {
         try {
-            const {
-                id_fournisseur,
-                id_commande_achat,
-                id_reception,
-                date_retour,
-                motif_retour,
-                notes,
-                lignes
-            } = req.body;
-
-            // ========== 1. VALIDATIONS DE BASE ==========
-            if (!id_fournisseur) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Le fournisseur est obligatoire'
-                });
-            }
-            if (!date_retour) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'La date de retour est obligatoire'
-                });
-            }
-            if (!motif_retour) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Le motif de retour est obligatoire'
-                });
-            }
-            if (!Array.isArray(lignes) || lignes.length === 0) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Au moins un produit est requis'
-                });
-            }
-
-            // ========== 2. VÉRIFIER LE FOURNISSEUR ==========
-            const fournisseur = await Fournisseur.findById(id_fournisseur, req.workspaceId);
-            if (!fournisseur) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Fournisseur non trouvé'
-                });
-            }
-            if (!fournisseur.actif) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Ce fournisseur est inactif'
-                });
-            }
-
-            // ========== 3. VALIDATIONS BASIQUES DES PRODUITS ==========
-            //    (la règle métier "reçu du fournisseur" est appliquée
-            //     dans le modèle lors de la transaction)
-            for (const ligne of lignes) {
-                const { id_produit, quantite } = ligne;
-
-                const produit = await Produit.findById(id_produit, req.workspaceId);
-                if (!produit) {
-                    return res.status(404).json({
-                        success: false,
-                        message: `Produit ID ${id_produit} non trouvé`
-                    });
-                }
-
-                if (!quantite || parseFloat(quantite) <= 0) {
-                    return res.status(400).json({
-                        success: false,
-                        message: `La quantité pour "${produit.nom}" doit être positive`
-                    });
-                }
-            }
-
-            // ========== 4. CRÉATION (dans le modèle avec toutes les règles) ==========
+            const scope = await RetourFournisseurController._resolveScope(req.body, req.workspaceId);
             const retour = await RetourFournisseur.create({
-                id_fournisseur,
-                id_commande_achat: id_commande_achat || null,
-                id_reception: id_reception || null,
-                date_retour,
-                motif_retour,
-                notes: notes || null,
+                ...req.body,
                 id_utilisateur: req.workspaceId,
-                lignes
+                destination: scope.destination,
+                id_entrepot: scope.id_entrepot
             });
-
-            return res.status(201).json({
-                success: true,
-                message: '✅ Retour fournisseur créé avec succès',
-                data: retour
-            });
-
+            return res.status(201).json({ success: true, message: 'Retour créé avec succès', data: retour });
         } catch (error) {
-            console.error('❌ Create retour error:', error);
-
-            const isBusinessError = error.message && (
-                error.message.includes('non trouvé') ||
-                error.message.includes('obligatoire') ||
-                error.message.includes('positive') ||
-                error.message.includes('Aucune quantité') ||
-                error.message.includes('Quantité trop élevée') ||
-                error.message.includes('Stock insuffisant') ||
-                error.message.includes('Reçu net')
-            );
-
-            return res.status(isBusinessError ? 400 : 500).json({
-                success: false,
-                message: error.message || 'Erreur lors de la création du retour'
-            });
+            return RetourFournisseurController._sendError(res, error, 'Erreur lors de la création du retour');
         }
     }
 
-    /**
-     * ============================================================
-     * GET /api/retours-fournisseurs
-     * ============================================================
-     */
     static async getAll(req, res) {
         try {
-            const {
-                search,
-                id_fournisseur,
-                statut,
-                motif_retour,
-                date_debut,
-                date_fin,
-                page = 1,
-                limit = 20
-            } = req.query;
-
-            const filters = {
-                search,
-                id_fournisseur,
-                statut,
-                motif_retour,
-                date_debut,
-                date_fin
-            };
-
+            const scope = await RetourFournisseurController._resolveScope(req.query, req.workspaceId);
+            const { page = 1, limit = 200, ...autres } = req.query;
             const pageNum = parseInt(page) || 1;
-            const limitNum = parseInt(limit) || 20;
-            const offset = (pageNum - 1) * limitNum;
-
-            filters.limit = limitNum;
-            filters.offset = offset;
-
-            const retours = await RetourFournisseur.findAll(filters, req.workspaceId);
-
-            return res.status(200).json({
-                success: true,
-                count: retours.length,
-                data: retours,
-                pagination: {
-                    page: pageNum,
-                    limit: limitNum,
-                    total: retours.length
-                }
-            });
-
+            const limitNum = parseInt(limit) || 200;
+            const retours = await RetourFournisseur.findAll({
+                ...autres,
+                destination: scope.destination,
+                id_entrepot: scope.id_entrepot,
+                limit: limitNum,
+                offset: (pageNum - 1) * limitNum
+            }, req.workspaceId);
+            return res.status(200).json({ success: true, count: retours.length, data: retours });
         } catch (error) {
-            console.error('❌ Get all retours error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des retours'
-            });
+            return RetourFournisseurController._sendError(res, error, 'Erreur lors de la récupération des retours');
         }
     }
 
-    /**
-     * ============================================================
-     * GET /api/retours-fournisseurs/:id
-     * ============================================================
-     */
     static async getById(req, res) {
         try {
-            const { id } = req.params;
-
-            if (!id || isNaN(id)) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'ID de retour invalide'
-                });
-            }
-
-            const retour = await RetourFournisseur.findById(parseInt(id), req.workspaceId);
-
-            if (!retour) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Retour non trouvé'
-                });
-            }
-
-            return res.status(200).json({
-                success: true,
-                data: retour
-            });
-
+            const retour = await RetourFournisseurController._charger(req.params.id, req.workspaceId);
+            return res.status(200).json({ success: true, data: retour });
         } catch (error) {
-            console.error('❌ Get retour by ID error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération du retour'
-            });
+            return RetourFournisseurController._sendError(res, error, 'Erreur lors de la récupération du retour');
         }
     }
 
-    /**
-     * ============================================================
-     * GET /api/retours-fournisseurs/statut/:statut
-     * ============================================================
-     */
     static async getByStatut(req, res) {
         try {
             const { statut } = req.params;
-
-            const statutsValides = ['en_attente', 'envoye', 'recu_par_fournisseur', 'traite', 'annule'];
-            if (!statutsValides.includes(statut)) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Statut invalide'
-                });
-            }
-
-            const retours = await RetourFournisseur.findByStatut(statut, req.workspaceId);
-
-            return res.status(200).json({
-                success: true,
-                count: retours.length,
-                data: retours
-            });
-
+            if (!STATUTS.includes(statut)) throw fail('Statut invalide');
+            const scope = await RetourFournisseurController._resolveScope(req.query, req.workspaceId);
+            const retours = await RetourFournisseur.findByStatut(statut, req.workspaceId, scope);
+            return res.status(200).json({ success: true, count: retours.length, data: retours });
         } catch (error) {
-            console.error('❌ Get by statut error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des retours'
-            });
+            return RetourFournisseurController._sendError(res, error, 'Erreur lors de la récupération des retours');
         }
     }
 
-    /**
-     * ============================================================
-     * GET /api/retours-fournisseurs/fournisseur/:id_fournisseur
-     * ============================================================
-     */
     static async getByFournisseur(req, res) {
         try {
-            const { id_fournisseur } = req.params;
-
-            if (!id_fournisseur || isNaN(id_fournisseur)) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'ID fournisseur invalide'
-                });
-            }
-
-            const retours = await RetourFournisseur.findByFournisseur(
-                parseInt(id_fournisseur),
-                req.workspaceId
-            );
-
-            return res.status(200).json({
-                success: true,
-                count: retours.length,
-                data: retours
-            });
-
+            const scope = await RetourFournisseurController._resolveScope(req.query, req.workspaceId);
+            const retours = await RetourFournisseur.findByFournisseur(req.params.id_fournisseur, req.workspaceId, scope);
+            return res.status(200).json({ success: true, count: retours.length, data: retours });
         } catch (error) {
-            console.error('❌ Get by fournisseur error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des retours'
-            });
+            return RetourFournisseurController._sendError(res, error, 'Erreur lors de la récupération des retours');
         }
     }
 
-    /**
-     * ============================================================
-     * PATCH /api/retours-fournisseurs/:id/statut
-     * ============================================================
-     */
+    /** Produits retournables à un fournisseur pour un entrepôt (même forme que /fournisseurs/:id/produits-recu) */
+    static async getProduitsRecus(req, res) {
+        try {
+            const scope = await RetourFournisseurController._resolveScope(req.query, req.workspaceId);
+            if (scope.destination !== 'entrepot') throw fail("Utilisez la route des fournisseurs pour le magasin");
+            const data = await RetourFournisseur.getProduitsRecusEntrepot(req.params.id_fournisseur, scope.id_entrepot);
+            return res.status(200).json({ success: true, count: data.length, data });
+        } catch (error) {
+            return RetourFournisseurController._sendError(res, error, 'Erreur lors de la récupération des produits');
+        }
+    }
+
+    static async getStats(req, res) {
+        try {
+            const scope = await RetourFournisseurController._resolveScope(req.query, req.workspaceId);
+            const stats = await RetourFournisseur.getStats(req.workspaceId, scope);
+            return res.status(200).json({ success: true, data: stats });
+        } catch (error) {
+            return RetourFournisseurController._sendError(res, error, 'Erreur lors de la récupération des statistiques');
+        }
+    }
+
     static async updateStatut(req, res) {
         try {
-            const { id } = req.params;
             const { statut } = req.body;
-
-            const statutsValides = ['en_attente', 'envoye', 'recu_par_fournisseur', 'traite', 'annule'];
-            if (!statutsValides.includes(statut)) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Statut invalide'
-                });
-            }
-
-            const retour = await RetourFournisseur.findById(id, req.workspaceId);
-            if (!retour) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Retour non trouvé'
-                });
-            }
-
-            const updated = await RetourFournisseur.updateStatut(id, statut, req.workspaceId);
-
-            if (!updated) {
-                return res.status(500).json({
-                    success: false,
-                    message: 'Erreur lors de la mise à jour du statut'
-                });
-            }
-
+            if (!STATUTS.includes(statut)) throw fail('Statut invalide');
+            await RetourFournisseurController._charger(req.params.id, req.workspaceId);
+            const ok = await RetourFournisseur.updateStatut(req.params.id, statut, req.workspaceId);
+            if (!ok) throw fail('Retour non trouvé ou déjà annulé', 404);
             return res.status(200).json({
                 success: true,
                 message: `Statut mis à jour: ${statut}`,
-                data: await RetourFournisseur.findById(id, req.workspaceId)
+                data: await RetourFournisseur.findById(req.params.id, req.workspaceId)
             });
-
         } catch (error) {
-            console.error('❌ Update statut error:', error);
-            return res.status(500).json({
-                success: false,
-                message: error.message || 'Erreur lors de la mise à jour du statut'
-            });
+            return RetourFournisseurController._sendError(res, error, 'Erreur lors de la mise à jour du statut');
         }
     }
 
-    /**
-     * ============================================================
-     * PATCH /api/retours-fournisseurs/:id/annuler
-     * ============================================================
-     */
     static async annuler(req, res) {
         try {
-            const { id } = req.params;
-
-            const annule = await RetourFournisseur.annuler(id, req.workspaceId);
-
-            if (!annule) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Impossible d\'annuler ce retour'
-                });
-            }
-
-            return res.status(200).json({
-                success: true,
-                message: 'Retour annulé avec succès',
-                data: await RetourFournisseur.findById(id, req.workspaceId)
-            });
-
+            await RetourFournisseur.annuler(req.params.id, req.workspaceId);
+            return res.status(200).json({ success: true, message: 'Retour annulé, stock réintégré' });
         } catch (error) {
-            console.error('❌ Annuler retour error:', error);
-            return res.status(500).json({
-                success: false,
-                message: error.message || 'Erreur lors de l\'annulation du retour'
-            });
+            return RetourFournisseurController._sendError(res, error, "Erreur lors de l'annulation du retour");
         }
     }
 
-    /**
-     * ============================================================
-     * DELETE /api/retours-fournisseurs/:id
-     * ============================================================
-     */
     static async delete(req, res) {
         try {
-            const { id } = req.params;
-
-            const deleted = await RetourFournisseur.delete(id, req.workspaceId);
-
-            if (!deleted) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Retour non trouvé ou ne peut pas être supprimé'
-                });
-            }
-
-            return res.status(200).json({
-                success: true,
-                message: 'Retour supprimé avec succès'
-            });
-
+            const ok = await RetourFournisseur.delete(req.params.id, req.workspaceId);
+            if (!ok) throw fail('Retour non trouvé', 404);
+            return res.status(200).json({ success: true, message: 'Retour supprimé' });
         } catch (error) {
-            console.error('❌ Delete retour error:', error);
-            return res.status(500).json({
-                success: false,
-                message: error.message || 'Erreur lors de la suppression du retour'
-            });
+            return RetourFournisseurController._sendError(res, error, 'Erreur lors de la suppression du retour');
         }
     }
 
-    /**
-     * ============================================================
-     * GET /api/retours-fournisseurs/stats
-     * ============================================================
-     */
-    static async getStats(req, res) {
-        try {
-            const stats = await RetourFournisseur.getStats(req.workspaceId);
-
-            return res.status(200).json({
-                success: true,
-                data: stats
-            });
-
-        } catch (error) {
-            console.error('❌ Get stats error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des statistiques'
-            });
-        }
-    }
-
-    /**
-     * ============================================================
-     * GET /api/retours-fournisseurs/export
-     * ============================================================
-     */
     static async export(req, res) {
         try {
-            const retours = await RetourFournisseur.findAll(req.query, req.workspaceId);
-
-            const exportData = retours.map(r => ({
+            const scope = await RetourFournisseurController._resolveScope(req.query, req.workspaceId);
+            const retours = await RetourFournisseur.findAll(
+                { destination: scope.destination, id_entrepot: scope.id_entrepot }, req.workspaceId
+            );
+            const data = retours.map((r) => ({
                 id: r.id_retour,
                 numero: r.numero_retour,
                 date: r.date_retour,
                 fournisseur: r.fournisseur_nom || '-',
-                commande: r.numero_commande || '-',
                 motif: r.motif_retour,
                 montant: parseFloat(r.montant_total) || 0,
-                statut: r.statut,
-                notes: r.notes || ''
+                statut: r.statut
             }));
-
-            return res.status(200).json({
-                success: true,
-                count: exportData.length,
-                data: exportData
-            });
-
+            return res.status(200).json({ success: true, count: data.length, data });
         } catch (error) {
-            console.error('❌ Export error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de l\'export des retours'
-            });
+            return RetourFournisseurController._sendError(res, error, "Erreur lors de l'export des retours");
         }
     }
 }

@@ -3,7 +3,7 @@ import express from 'express';
 import InventaireController from '../controllers/InventaireController.js';
 import { authenticateToken } from '../middleware/middleware.js';
 
-const router = express.Router();
+const router = express.Router(); 
 
 router.use(authenticateToken);
 

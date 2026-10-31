@@ -6,6 +6,7 @@ import Magasin from '../models/Magasin.js';
 import Employe from '../models/Employe.js';
 import PasswordReset from '../models/PasswordReset.js';
 import { sendResetCode } from '../Services/emailService.js';
+import Entrepot from '../models/Entrepot.js';
 
 const JWT_EXPIRES_IN = '30d';
 const DEFAULT_COUNTRY = 'CI'; // Pays par défaut pour parser les numéros locaux
@@ -415,22 +416,42 @@ class UtilisateurController {
             console.log('═══════════════════════════════════════════════════');
             console.log('');
 
-            return res.status(200).json({
-                success: true,
-                message: 'Connexion réussie',
-                token,
-                user: {
-                    id,
-                    type,
-                    slug: type === 'utilisateur' ? user.slug : user.slug_patron,
-                    fullname: user.fullname,
-                    telephone: user.telephone,
-                    email: user.email || null,
-                    role: user.role_nom,
-                    id_magasin: type === 'employe' ? user.id_magasin : null,
-                    actif: user.actif
-                }
-            });
+            // ═══════════════════════════════════════════════════════════
+// ✅ NOUVEAU : charger les entrepôts + fonctionnalités
+// ═══════════════════════════════════════════════════════════
+let entrepots = [];
+if (type === 'utilisateur') {
+    try {
+        entrepots = await Entrepot.findAllByUser(user.id_utilisateur);
+    } catch (err) {
+        console.error('⚠️ Impossible de charger les entrepôts:', err);
+    }
+}
+
+const fonctionnalites = {
+    entrepot: entrepots.length > 0,
+    multi_magasins: entrepots.some(e => e.role_membre === 'proprietaire'),
+    transferts: entrepots.length > 0,
+};
+
+return res.status(200).json({
+    success: true,
+    message: 'Connexion réussie',
+    token,
+    user: {
+        id,
+        type,
+        slug: type === 'utilisateur' ? user.slug : user.slug_patron,
+        fullname: user.fullname,
+        telephone: user.telephone,
+        email: user.email || null,
+        role: user.role_nom,
+        id_magasin: type === 'employe' ? user.id_magasin : null,
+        actif: user.actif,
+        entrepots,        // ✅ NOUVEAU
+        fonctionnalites,  // ✅ NOUVEAU
+    }
+});
 
         } catch (error) {
             console.log('');
@@ -461,20 +482,35 @@ class UtilisateurController {
                 });
             }
 
-            return res.status(200).json({
-                success: true,
-                user: {
-                    id: user.id_utilisateur,
-                    slug: user.slug,
-                    fullname: user.fullname,
-                    telephone: user.telephone,
-                    email: user.email,
-                    role: user.role_nom,
-                    actif: user.actif,
-                    date_creation: user.date_creation,
-                    derniere_connexion: user.derniere_connexion
-                }
-            });
+let entrepots = [];
+try {
+    entrepots = await Entrepot.findAllByUser(userId);
+} catch (err) {
+    console.error('⚠️ Impossible de charger les entrepôts:', err);
+}
+
+const fonctionnalites = {
+    entrepot: entrepots.length > 0,
+    multi_magasins: entrepots.some(e => e.role_membre === 'proprietaire'),
+    transferts: entrepots.length > 0,
+};
+
+return res.status(200).json({
+    success: true,
+    user: {
+        id: user.id_utilisateur,
+        slug: user.slug,
+        fullname: user.fullname,
+        telephone: user.telephone,
+        email: user.email,
+        role: user.role_nom,
+        actif: user.actif,
+        date_creation: user.date_creation,
+        derniere_connexion: user.derniere_connexion,
+        entrepots,        // ✅ NOUVEAU
+        fonctionnalites,  // ✅ NOUVEAU
+    }
+});
 
         } catch (error) {
             console.error('❌ GetProfile error:', error);

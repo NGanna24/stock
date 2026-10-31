@@ -1,123 +1,169 @@
 // controllers/CommandeAchatController.js
+//
+// Commandes d'achat : destination 'magasin' (défaut) ou 'entrepot'.
+// Seul le PROPRIÉTAIRE d'un entrepôt peut commander pour cet entrepôt.
+// `req.workspaceId` = compte (patron) : les employés agissent sous le compte de leur patron.
 import CommandeAchat from '../models/CommandeAchat.js';
 import Fournisseur from '../models/Fournisseur.js';
 import Produit from '../models/Produit.js';
 import UniteVente from '../models/UniteVente.js';
+import ProduitEntrepot from '../models/ProduitEntrepot.js';
+
+const fail = (message, statusCode = 400) => {
+    const err = new Error(message);
+    err.statusCode = statusCode;
+    return err;
+};
 
 class CommandeAchatController {
+    /* ============================================================
+       HELPERS
+       ============================================================ */
+
+    /** Réponse d'erreur homogène : les erreurs métier gardent leur code HTTP */
+    static _sendError(res, error, fallbackMessage) {
+        console.error('❌', error);
+        if (error.statusCode) {
+            return res.status(error.statusCode).json({ success: false, message: error.message });
+        }
+        return res.status(500).json({
+            success: false,
+            message: fallbackMessage || error.message || 'Erreur serveur',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+
     /**
-     * ============================================================
-     * ✅ Créer une nouvelle commande d'achat (NIVEAU 3)
-     * ============================================================
-     * Règles métier :
-     *  - Le prix d'achat est OPTIONNEL (NULL si non fourni)
-     *  - Il sera renseigné plus tard, à la RÉCEPTION
-     *  - L'unité de vente peut être NULL (= unité de base, ex: bidon)
+     * Destination demandée (query ou body) -> { destination, id_entrepot }
+     * Pour 'entrepot' : l'entrepôt est obligatoire ET le compte doit en être propriétaire.
      */
+    static async _resolveScope(source, id_utilisateur) {
+        const s = CommandeAchat.scope(source?.destination, source?.id_entrepot);
+        if (s.destination === 'entrepot') {
+            if (!s.id_entrepot) throw fail("L'entrepôt de livraison est obligatoire");
+            if (!(await CommandeAchat.estProprietaireEntrepot(s.id_entrepot, id_utilisateur))) {
+                throw fail("Seul le propriétaire de l'entrepôt peut gérer les commandes de cet entrepôt", 403);
+            }
+        }
+        return s;
+    }
+
+    /** Prix optionnel : vide OK, sinon strictement positif */
+    static _prixValide(prix) {
+        if (prix === null || prix === undefined || prix === '') return true;
+        const p = parseFloat(prix);
+        return !isNaN(p) && p > 0;
+    }
+
+    /**
+     * Valide les lignes (produit, unité, quantité, prix) selon la destination.
+     * Lève une erreur avec statusCode en cas de problème.
+     */
+    static async _validerLignes(lignes, scope, id_utilisateur) {
+        for (const ligne of lignes) {
+            let nomProduit;
+
+            if (scope.destination === 'entrepot') {
+                // ---------- Produit d'ENTREPÔT (ou produit du magasin à créer à l'entrepôt) ----------
+                if (!ligne.id_produit_entrepot && ligne.id_produit) {
+                    const produit = await Produit.findById(ligne.id_produit, id_utilisateur);
+                    if (!produit) throw fail(`Produit ID ${ligne.id_produit} non trouvé`, 404);
+                    nomProduit = produit.nom;
+                    if (ligne.id_unite_vente) {
+                        const unite = await UniteVente.findById(ligne.id_unite_vente, id_utilisateur);
+                        if (!unite) throw fail(`Unité de vente ID ${ligne.id_unite_vente} non trouvée`, 404);
+                    }
+                    if (!ligne.quantite || parseFloat(ligne.quantite) <= 0) {
+                        throw fail(`La quantité pour "${nomProduit}" doit être positive`);
+                    }
+                    if (!CommandeAchatController._prixValide(ligne.prix_achat)) {
+                        throw fail(`Le prix d'achat pour "${nomProduit}" doit être positif ou vide`);
+                    }
+                    continue;
+                }
+                if (!ligne.id_produit_entrepot) throw fail("Produit de l'entrepôt manquant sur une ligne");
+
+                const pe = await ProduitEntrepot.findById(ligne.id_produit_entrepot);
+                if (!pe || Number(pe.id_entrepot) !== Number(scope.id_entrepot) || !pe.actif) {
+                    throw fail(`Produit entrepôt ID ${ligne.id_produit_entrepot} non trouvé dans cet entrepôt`, 404);
+                }
+                nomProduit = pe.nom;
+
+                if (ligne.id_unite_vente) {
+                    const unite = (pe.unites_vente || []).find(
+                        (u) => String(u.id_unite_vente) === String(ligne.id_unite_vente)
+                    );
+                    if (!unite) {
+                        throw fail(`Unité de vente ID ${ligne.id_unite_vente} non trouvée pour "${pe.nom}"`, 404);
+                    }
+                }
+            } else {
+                // ---------- Produit du MAGASIN ----------
+                const produit = await Produit.findById(ligne.id_produit, id_utilisateur);
+                if (!produit) throw fail(`Produit ID ${ligne.id_produit} non trouvé`, 404);
+                nomProduit = produit.nom;
+
+                if (ligne.id_unite_vente) {
+                    const unite = await UniteVente.findById(ligne.id_unite_vente, id_utilisateur);
+                    if (!unite) throw fail(`Unité de vente ID ${ligne.id_unite_vente} non trouvée`, 404);
+                    if (!unite.actif) throw fail(`L'unité "${unite.nom}" est inactive`);
+                }
+            }
+
+            if (!ligne.quantite || parseFloat(ligne.quantite) <= 0) {
+                throw fail(`La quantité pour "${nomProduit}" doit être positive`);
+            }
+            if (!CommandeAchatController._prixValide(ligne.prix_achat)) {
+                throw fail(`Le prix d'achat pour "${nomProduit}" doit être positif ou vide`);
+            }
+        }
+    }
+
+    /* ============================================================
+       GET /commandes-achat/destinations
+       Entrepôts pour lesquels le compte peut commander (= propriétaire).
+       Liste vide => le front n'affiche aucun choix « Entrepôt ».
+       ============================================================ */
+    static async getDestinations(req, res) {
+        try {
+            const entrepots = await CommandeAchat.getEntrepotsProprietaire(req.workspaceId);
+            return res.status(200).json({ success: true, count: entrepots.length, data: entrepots });
+        } catch (error) {
+            return CommandeAchatController._sendError(res, error, 'Erreur lors du chargement des destinations');
+        }
+    }
+
+    /* ============================================================
+       Créer une commande d'achat
+       ------------------------------------------------------------
+       - Le prix d'achat est OPTIONNEL (renseigné plus tard, à la RÉCEPTION)
+       - L'unité de vente peut être NULL (= unité de base)
+       - body.destination = 'magasin' (défaut) | 'entrepot' (+ id_entrepot)
+       ============================================================ */
     static async create(req, res) {
         try {
-            const {
-                id_fournisseur,
-                date_commande,
-                notes,
-                lignes
-            } = req.body;
+            const { id_fournisseur, date_commande, notes, lignes } = req.body;
 
-            // ========== 1. VALIDATIONS DE BASE ==========
-            if (!id_fournisseur) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Le fournisseur est obligatoire'
-                });
-            }
-            if (!date_commande) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'La date de commande est obligatoire'
-                });
-            }
-            if (!lignes || lignes.length === 0) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Au moins un produit est requis'
-                });
-            }
+            if (!id_fournisseur) throw fail('Le fournisseur est obligatoire');
+            if (!date_commande) throw fail('La date de commande est obligatoire');
+            if (!lignes || lignes.length === 0) throw fail('Au moins un produit est requis');
 
-            // ========== 2. VÉRIFIER LE FOURNISSEUR ==========
+            const scope = await CommandeAchatController._resolveScope(req.body, req.workspaceId);
+
             const fournisseur = await Fournisseur.findById(id_fournisseur, req.workspaceId);
-            if (!fournisseur) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Fournisseur non trouvé'
-                });
-            }
-            if (!fournisseur.actif) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Ce fournisseur est inactif'
-                });
-            }
+            if (!fournisseur) throw fail('Fournisseur non trouvé', 404);
+            if (!fournisseur.actif) throw fail('Ce fournisseur est inactif');
 
-            // ========== 3. VÉRIFIER LES PRODUITS + UNITÉS ==========
-            for (const ligne of lignes) {
-                const produit = await Produit.findById(ligne.id_produit, req.workspaceId);
-                if (!produit) {
-                    return res.status(404).json({
-                        success: false,
-                        message: `Produit ID ${ligne.id_produit} non trouvé`
-                    });
-                }
+            await CommandeAchatController._validerLignes(lignes, scope, req.workspaceId);
 
-                // ✅ Vérifier l'unité de vente SI fournie (peut être null = unité de base)
-                if (ligne.id_unite_vente) {
-                    const unite = await UniteVente.findById(ligne.id_unite_vente, req.workspaceId);
-                    if (!unite) {
-                        return res.status(404).json({
-                            success: false,
-                            message: `Unité de vente ID ${ligne.id_unite_vente} non trouvée`
-                        });
-                    }
-                    if (!unite.actif) {
-                        return res.status(400).json({
-                            success: false,
-                            message: `L'unité "${unite.nom}" est inactive`
-                        });
-                    }
-                }
-
-                // ✅ Quantité obligatoire et positive
-                if (!ligne.quantite || parseFloat(ligne.quantite) <= 0) {
-                    return res.status(400).json({
-                        success: false,
-                        message: `La quantité pour "${produit.nom}" doit être positive`
-                    });
-                }
-
-                // ✅ NOUVEAU : prix d'achat OPTIONNEL
-                // - Si absent (null, undefined, '') → OK, on laisse NULL
-                // - Si fourni → doit être > 0
-                if (
-                    ligne.prix_achat !== null &&
-                    ligne.prix_achat !== undefined &&
-                    ligne.prix_achat !== ''
-                ) {
-                    const prix = parseFloat(ligne.prix_achat);
-                    if (isNaN(prix) || prix <= 0) {
-                        return res.status(400).json({
-                            success: false,
-                            message: `Le prix d'achat pour "${produit.nom}" doit être positif ou vide`
-                        });
-                    }
-                }
-            }
-
-            // ========== 4. CRÉATION ==========
             const commande = await CommandeAchat.create({
                 id_fournisseur,
                 date_commande,
                 notes,
                 id_utilisateur: req.workspaceId,
-                lignes: lignes || []
+                destination: scope.destination,
+                id_entrepot: scope.id_entrepot,
+                lignes
             });
 
             return res.status(201).json({
@@ -127,20 +173,13 @@ class CommandeAchatController {
             });
 
         } catch (error) {
-            console.error('❌ Create commande error:', error);
-            return res.status(500).json({
-                success: false,
-                message: error.message || 'Erreur lors de la création de la commande',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
-            });
+            return CommandeAchatController._sendError(res, error, 'Erreur lors de la création de la commande');
         }
     }
 
-    /**
-     * ============================================================
-     * Récupérer toutes les commandes du workspace
-     * ============================================================
-     */
+    /* ============================================================
+       Toutes les commandes du workspace (?destination=&id_entrepot=)
+       ============================================================ */
     static async getAll(req, res) {
         try {
             const {
@@ -155,6 +194,11 @@ class CommandeAchatController {
                 limit = 20
             } = req.query;
 
+            const scope = await CommandeAchatController._resolveScope(req.query, req.workspaceId);
+
+            const pageNum = parseInt(page) || 1;
+            const limitNum = parseInt(limit) || 20;
+
             const filters = {
                 search,
                 id_fournisseur,
@@ -162,15 +206,12 @@ class CommandeAchatController {
                 date_debut,
                 date_fin,
                 montant_min,
-                montant_max
+                montant_max,
+                destination: scope.destination,
+                id_entrepot: scope.id_entrepot,
+                limit: limitNum,
+                offset: (pageNum - 1) * limitNum
             };
-
-            const pageNum = parseInt(page) || 1;
-            const limitNum = parseInt(limit) || 20;
-            const offset = (pageNum - 1) * limitNum;
-
-            filters.limit = limitNum;
-            filters.offset = offset;
 
             const commandes = await CommandeAchat.findAll(filters, req.workspaceId);
 
@@ -183,214 +224,101 @@ class CommandeAchatController {
             });
 
         } catch (error) {
-            console.error('❌ Get all commandes error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des commandes'
-            });
+            return CommandeAchatController._sendError(res, error, 'Erreur lors de la récupération des commandes');
         }
     }
 
-    /**
-     * ============================================================
-     * Récupérer une commande par ID
-     * ============================================================
-     */
+    /* ============================================================
+       Une commande par ID
+       ============================================================ */
     static async getById(req, res) {
         try {
-            const { id } = req.params;
+            const commande = await CommandeAchat.findById(req.params.id, req.workspaceId);
 
-            const commande = await CommandeAchat.findById(id, req.workspaceId);
+            if (!commande) throw fail('Commande non trouvée', 404);
 
-            if (!commande) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Commande non trouvée'
-                });
-            }
-
-            return res.status(200).json({
-                success: true,
-                data: commande
-            });
+            return res.status(200).json({ success: true, data: commande });
 
         } catch (error) {
-            console.error('❌ Get commande by ID error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération de la commande'
-            });
+            return CommandeAchatController._sendError(res, error, 'Erreur lors de la récupération de la commande');
         }
     }
 
-    /**
-     * ============================================================
-     * Récupérer les commandes par statut
-     * ============================================================
-     */
+    /* ============================================================
+       Par statut (?destination=&id_entrepot=)
+       ============================================================ */
     static async getByStatut(req, res) {
         try {
-            const { statut } = req.params;
+            const scope = await CommandeAchatController._resolveScope(req.query, req.workspaceId);
+            const commandes = await CommandeAchat.findByStatut(req.params.statut, req.workspaceId, scope);
 
-            const commandes = await CommandeAchat.findByStatut(statut, req.workspaceId);
-
-            return res.status(200).json({
-                success: true,
-                count: commandes.length,
-                data: commandes
-            });
+            return res.status(200).json({ success: true, count: commandes.length, data: commandes });
 
         } catch (error) {
-            console.error('❌ Get by statut error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des commandes'
-            });
+            return CommandeAchatController._sendError(res, error, 'Erreur lors de la récupération des commandes');
         }
     }
 
-    /**
-     * ============================================================
-     * Récupérer les commandes d'un fournisseur
-     * ============================================================
-     */
+    /* ============================================================
+       Commandes d'un fournisseur
+       ============================================================ */
     static async getByFournisseur(req, res) {
         try {
-            const { id_fournisseur } = req.params;
+            const scope = await CommandeAchatController._resolveScope(req.query, req.workspaceId);
+            const commandes = await CommandeAchat.findByFournisseur(req.params.id_fournisseur, req.workspaceId, scope);
 
-            const commandes = await CommandeAchat.findByFournisseur(id_fournisseur, req.workspaceId);
-
-            return res.status(200).json({
-                success: true,
-                count: commandes.length,
-                data: commandes
-            });
+            return res.status(200).json({ success: true, count: commandes.length, data: commandes });
 
         } catch (error) {
-            console.error('❌ Get by fournisseur error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des commandes'
-            });
+            return CommandeAchatController._sendError(res, error, 'Erreur lors de la récupération des commandes');
         }
     }
 
-    /**
-     * ============================================================
-     * Récupérer les commandes du mois en cours
-     * ============================================================
-     */
+    /* ============================================================
+       Commandes du mois en cours
+       ============================================================ */
     static async getCurrentMonth(req, res) {
         try {
-            const commandes = await CommandeAchat.getCurrentMonth(req.workspaceId);
+            const scope = await CommandeAchatController._resolveScope(req.query, req.workspaceId);
+            const commandes = await CommandeAchat.getCurrentMonth(req.workspaceId, scope);
 
-            return res.status(200).json({
-                success: true,
-                count: commandes.length,
-                data: commandes
-            });
+            return res.status(200).json({ success: true, count: commandes.length, data: commandes });
 
         } catch (error) {
-            console.error('❌ Get current month error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des commandes'
-            });
+            return CommandeAchatController._sendError(res, error, 'Erreur lors de la récupération des commandes');
         }
     }
 
-    /**
-     * ============================================================
-     * ✅ Mettre à jour une commande (NIVEAU 3)
-     * ============================================================
-     */
+    /* ============================================================
+       Mettre à jour une commande (la destination ne change pas)
+       ============================================================ */
     static async update(req, res) {
         try {
             const { id } = req.params;
             const { date_commande, id_fournisseur, notes, lignes } = req.body;
 
-            // Vérifier existence
             const existing = await CommandeAchat.findById(id, req.workspaceId);
-            if (!existing) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Commande non trouvée'
-                });
-            }
+            if (!existing) throw fail('Commande non trouvée', 404);
 
             if (['recue', 'annulee'].includes(existing.statut)) {
-                return res.status(400).json({
-                    success: false,
-                    message: `Impossible de modifier une commande ${existing.statut}`
-                });
+                throw fail(`Impossible de modifier une commande ${existing.statut}`);
             }
 
-            // Vérifier le fournisseur si modifié
+            // Destination = celle de la commande (jamais celle du body)
+            const scope = await CommandeAchatController._resolveScope(
+                { destination: existing.destination, id_entrepot: existing.id_entrepot },
+                req.workspaceId
+            );
+
             if (id_fournisseur && id_fournisseur !== existing.id_fournisseur) {
                 const fournisseur = await Fournisseur.findById(id_fournisseur, req.workspaceId);
-                if (!fournisseur) {
-                    return res.status(404).json({
-                        success: false,
-                        message: 'Fournisseur non trouvé'
-                    });
-                }
-                if (!fournisseur.actif) {
-                    return res.status(400).json({
-                        success: false,
-                        message: 'Ce fournisseur est inactif'
-                    });
-                }
+                if (!fournisseur) throw fail('Fournisseur non trouvé', 404);
+                if (!fournisseur.actif) throw fail('Ce fournisseur est inactif');
             }
 
-            // Vérifier les lignes si modifiées
             if (lignes) {
-                if (lignes.length === 0) {
-                    return res.status(400).json({
-                        success: false,
-                        message: 'La commande doit contenir au moins un produit'
-                    });
-                }
-                for (const ligne of lignes) {
-                    const produit = await Produit.findById(ligne.id_produit, req.workspaceId);
-                    if (!produit) {
-                        return res.status(404).json({
-                            success: false,
-                            message: `Produit ID ${ligne.id_produit} non trouvé`
-                        });
-                    }
-
-                    if (ligne.id_unite_vente) {
-                        const unite = await UniteVente.findById(ligne.id_unite_vente, req.workspaceId);
-                        if (!unite) {
-                            return res.status(404).json({
-                                success: false,
-                                message: `Unité de vente ID ${ligne.id_unite_vente} non trouvée`
-                            });
-                        }
-                    }
-
-                    if (!ligne.quantite || parseFloat(ligne.quantite) <= 0) {
-                        return res.status(400).json({
-                            success: false,
-                            message: `Quantité invalide pour "${produit.nom}"`
-                        });
-                    }
-
-                    // ✅ Prix OPTIONNEL
-                    if (
-                        ligne.prix_achat !== null &&
-                        ligne.prix_achat !== undefined &&
-                        ligne.prix_achat !== ''
-                    ) {
-                        const prix = parseFloat(ligne.prix_achat);
-                        if (isNaN(prix) || prix <= 0) {
-                            return res.status(400).json({
-                                success: false,
-                                message: `Prix d'achat invalide pour "${produit.nom}"`
-                            });
-                        }
-                    }
-                }
+                if (lignes.length === 0) throw fail('La commande doit contenir au moins un produit');
+                await CommandeAchatController._validerLignes(lignes, scope, req.workspaceId);
             }
 
             const commande = await CommandeAchat.update(id, {
@@ -407,72 +335,29 @@ class CommandeAchatController {
             });
 
         } catch (error) {
-            console.error('❌ Update commande error:', error);
-            return res.status(500).json({
-                success: false,
-                message: error.message || 'Erreur lors de la mise à jour de la commande'
-            });
+            return CommandeAchatController._sendError(res, error, 'Erreur lors de la mise à jour de la commande');
         }
     }
 
-    /**
-     * ============================================================
-     * ✅ Ajouter des produits à une commande (NIVEAU 3)
-     * ============================================================
-     */
+    /* ============================================================
+       Ajouter des produits à une commande
+       ============================================================ */
     static async addLignes(req, res) {
         try {
             const { id } = req.params;
             const { lignes } = req.body;
 
-            if (!lignes || lignes.length === 0) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Au moins un produit est requis'
-                });
-            }
+            if (!lignes || lignes.length === 0) throw fail('Au moins un produit est requis');
 
-            for (const ligne of lignes) {
-                const produit = await Produit.findById(ligne.id_produit, req.workspaceId);
-                if (!produit) {
-                    return res.status(404).json({
-                        success: false,
-                        message: `Produit ID ${ligne.id_produit} non trouvé`
-                    });
-                }
+            const existing = await CommandeAchat.findById(id, req.workspaceId);
+            if (!existing) throw fail('Commande non trouvée', 404);
 
-                if (ligne.id_unite_vente) {
-                    const unite = await UniteVente.findById(ligne.id_unite_vente, req.workspaceId);
-                    if (!unite) {
-                        return res.status(404).json({
-                            success: false,
-                            message: `Unité de vente ID ${ligne.id_unite_vente} non trouvée`
-                        });
-                    }
-                }
+            const scope = await CommandeAchatController._resolveScope(
+                { destination: existing.destination, id_entrepot: existing.id_entrepot },
+                req.workspaceId
+            );
 
-                if (!ligne.quantite || parseFloat(ligne.quantite) <= 0) {
-                    return res.status(400).json({
-                        success: false,
-                        message: `Quantité invalide pour "${produit.nom}"`
-                    });
-                }
-
-                // ✅ Prix OPTIONNEL
-                if (
-                    ligne.prix_achat !== null &&
-                    ligne.prix_achat !== undefined &&
-                    ligne.prix_achat !== ''
-                ) {
-                    const prix = parseFloat(ligne.prix_achat);
-                    if (isNaN(prix) || prix <= 0) {
-                        return res.status(400).json({
-                            success: false,
-                            message: `Prix d'achat invalide pour "${produit.nom}"`
-                        });
-                    }
-                }
-            }
+            await CommandeAchatController._validerLignes(lignes, scope, req.workspaceId);
 
             const commande = await CommandeAchat.addLignes(id, lignes, req.workspaceId);
 
@@ -483,61 +368,33 @@ class CommandeAchatController {
             });
 
         } catch (error) {
-            console.error('❌ Add lignes error:', error);
-            return res.status(500).json({
-                success: false,
-                message: error.message || 'Erreur lors de l\'ajout des produits'
-            });
+            return CommandeAchatController._sendError(res, error, "Erreur lors de l'ajout des produits");
         }
     }
 
-    /**
-     * ============================================================
-     * Mettre à jour le statut d'une commande
-     * ============================================================
-     */
+    /* ============================================================
+       Changer le statut
+       ============================================================ */
     static async updateStatut(req, res) {
         try {
             const { id } = req.params;
             const { statut } = req.body;
 
             const statutsValides = ['en_attente', 'envoyee', 'partiellement_recue', 'recue', 'annulee'];
-            if (!statutsValides.includes(statut)) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Statut invalide'
-                });
-            }
+            if (!statutsValides.includes(statut)) throw fail('Statut invalide');
 
             const commande = await CommandeAchat.findById(id, req.workspaceId);
-            if (!commande) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Commande non trouvée'
-                });
-            }
+            if (!commande) throw fail('Commande non trouvée', 404);
 
             if (commande.statut === 'recue' && statut !== 'recue') {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Une commande reçue ne peut pas changer de statut'
-                });
+                throw fail('Une commande reçue ne peut pas changer de statut');
             }
             if (commande.statut === 'annulee' && statut !== 'annulee') {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Une commande annulée ne peut pas changer de statut'
-                });
+                throw fail('Une commande annulée ne peut pas changer de statut');
             }
 
             const updated = await CommandeAchat.updateStatut(id, statut, req.workspaceId);
-
-            if (!updated) {
-                return res.status(500).json({
-                    success: false,
-                    message: 'Erreur lors de la mise à jour du statut'
-                });
-            }
+            if (!updated) throw new Error('Erreur lors de la mise à jour du statut');
 
             return res.status(200).json({
                 success: true,
@@ -546,39 +403,22 @@ class CommandeAchatController {
             });
 
         } catch (error) {
-            console.error('❌ Update statut error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la mise à jour du statut'
-            });
+            return CommandeAchatController._sendError(res, error, 'Erreur lors de la mise à jour du statut');
         }
     }
 
-    /**
-     * ============================================================
-     * Annuler une commande
-     * ============================================================
-     */
+    /* ============================================================
+       Annuler
+       ============================================================ */
     static async annuler(req, res) {
         try {
             const { id } = req.params;
 
             const peutAnnuler = await CommandeAchat.canAnnuler(id, req.workspaceId);
-            if (!peutAnnuler) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Cette commande ne peut pas être annulée'
-                });
-            }
+            if (!peutAnnuler) throw fail('Cette commande ne peut pas être annulée');
 
             const updated = await CommandeAchat.updateStatut(id, 'annulee', req.workspaceId);
-
-            if (!updated) {
-                return res.status(500).json({
-                    success: false,
-                    message: 'Erreur lors de l\'annulation de la commande'
-                });
-            }
+            if (!updated) throw new Error("Erreur lors de l'annulation de la commande");
 
             return res.status(200).json({
                 success: true,
@@ -587,77 +427,51 @@ class CommandeAchatController {
             });
 
         } catch (error) {
-            console.error('❌ Annuler commande error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de l\'annulation de la commande'
-            });
+            return CommandeAchatController._sendError(res, error, "Erreur lors de l'annulation de la commande");
         }
     }
 
-    /**
-     * ============================================================
-     * Supprimer une commande (seulement si en attente)
-     * ============================================================
-     */
+    /* ============================================================
+       Supprimer (seulement si en attente)
+       ============================================================ */
     static async delete(req, res) {
         try {
-            const { id } = req.params;
+            const deleted = await CommandeAchat.delete(req.params.id, req.workspaceId);
 
-            const deleted = await CommandeAchat.delete(id, req.workspaceId);
+            if (!deleted) throw fail('Commande non trouvée ou ne peut pas être supprimée', 404);
 
-            if (!deleted) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Commande non trouvée ou ne peut pas être supprimée'
-                });
-            }
-
-            return res.status(200).json({
-                success: true,
-                message: 'Commande supprimée avec succès'
-            });
+            return res.status(200).json({ success: true, message: 'Commande supprimée avec succès' });
 
         } catch (error) {
-            console.error('❌ Delete commande error:', error);
-            return res.status(500).json({
-                success: false,
-                message: error.message || 'Erreur lors de la suppression de la commande'
-            });
+            return CommandeAchatController._sendError(res, error, 'Erreur lors de la suppression de la commande');
         }
     }
 
-    /**
-     * ============================================================
-     * Récupérer les statistiques des commandes
-     * ============================================================
-     */
+    /* ============================================================
+       Statistiques (?destination=&id_entrepot=)
+       ============================================================ */
     static async getStats(req, res) {
         try {
-            const stats = await CommandeAchat.getStats(req.workspaceId);
+            const scope = await CommandeAchatController._resolveScope(req.query, req.workspaceId);
+            const stats = await CommandeAchat.getStats(req.workspaceId, scope);
 
-            return res.status(200).json({
-                success: true,
-                data: stats
-            });
+            return res.status(200).json({ success: true, data: stats });
 
         } catch (error) {
-            console.error('❌ Get stats error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des statistiques'
-            });
+            return CommandeAchatController._sendError(res, error, 'Erreur lors de la récupération des statistiques');
         }
     }
 
-    /**
-     * ============================================================
-     * Exporter les commandes du workspace
-     * ============================================================
-     */
+    /* ============================================================
+       Export (?destination=&id_entrepot=)
+       ============================================================ */
     static async export(req, res) {
         try {
-            const commandes = await CommandeAchat.findAll(req.query, req.workspaceId);
+            const scope = await CommandeAchatController._resolveScope(req.query, req.workspaceId);
+            const commandes = await CommandeAchat.findAll(
+                { ...req.query, destination: scope.destination, id_entrepot: scope.id_entrepot },
+                req.workspaceId
+            );
 
             const exportData = commandes.map(c => ({
                 id: c.id_commande_achat,
@@ -676,11 +490,7 @@ class CommandeAchatController {
             });
 
         } catch (error) {
-            console.error('❌ Export error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Erreur lors de l\'export des commandes'
-            });
+            return CommandeAchatController._sendError(res, error, "Erreur lors de l'export des commandes");
         }
     }
 }

@@ -5,12 +5,21 @@ import { authenticateToken } from '../middleware/middleware.js';
 
 const router = express.Router();
 
+// ⚠️ Routes statiques AVANT les routes paramétrées (/:id)
+
+// ==================== DESTINATIONS (entrepôts où l'on peut commander) ====================
+router.get(
+    '/destinations',
+    authenticateToken,
+    CommandeAchatController.getDestinations
+);
+
 // ==================== ROUTES STATISTIQUES ====================
 router.get(
     '/stats',
     authenticateToken,
     CommandeAchatController.getStats
-); 
+);
 
 // ==================== ROUTES D'EXPORT ====================
 router.get(

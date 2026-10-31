@@ -33,16 +33,22 @@ import employeRoutes from './routes/EmployeRoutes.js';
 // En haut, avec les autres imports
 import assistantAchatRoutes from './routes/AssistantAchatRoutes.js';
 import searchRoutes from './routes/SearchRoutes.js';
+import ProduitEntrepotRoutes from './routes/ProduitEntrepotRoutes.js';
+import MouvementEntrepotRoutes from './routes/MouvementEntrepotRoutes.js';
 
 import adminRoutes from './routes/AdminRoutes.js';
 import MagasinAdminRoutes from './routes/MagasinAdminRoutes.js';
 import UtilisateurAdminRoutes from './routes/UtilisateurAdminRoutes.js';
+import EntrepotRoutes from './routes/EntrepotRoutes.js';
+import TransfertRoutes from './routes/TransfertStockRoutes.js';
+// import TransfertRoutes from './routes/TransfertStockRoutes.js';
+
+import TransfertStockRoutes from './routes/TransfertStockRoutes.js';
 
 import gptRoutes from './routes/GptRoutes.js';
 
 import SuperAdminAuthRoutes from './routes/SuperAdminAuthRoutes.js';
 import { authenticateSuperAdmin } from './middleware/superAdminAuth.js';
-// Dans la section ROUTES API PRINCIPALES
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -132,6 +138,12 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/super-admin/magasins', MagasinAdminRoutes);
 app.use('/api/super-admin/utilisateurs', UtilisateurAdminRoutes);
 app.use('/api/super-admin/auth', SuperAdminAuthRoutes);
+app.use('/api', ProduitEntrepotRoutes); 
+app.use('/api', MouvementEntrepotRoutes);
+
+
+app.use('/api/entrepots', EntrepotRoutes);
+app.use('/api', TransfertStockRoutes);   // même préfixe que ProduitEntrepotRoutes
 
 // ==================== DÉMARRAGE DU SERVEUR ====================
 const startServer = async () => {

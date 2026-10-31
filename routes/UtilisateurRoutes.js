@@ -5,7 +5,7 @@ import { authenticateToken } from '../middleware/middleware.js';
 
 
 const router = express.Router();
-
+ 
 // ==================== ROUTES PUBLIQUES ====================
 router.post('/register', UtilisateurController.register);
 router.post('/login', UtilisateurController.login);
