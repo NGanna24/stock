@@ -727,8 +727,6 @@ class AssistantAchat {
         const { groupes = [], date_commande, notes } = payload;
         const { destination, id_entrepot } = CommandeAchat.scope(payload.destination, payload.id_entrepot);
         const estEntrepot = destination === 'entrepot';
-        // lignes_magasin : produits du CATALOGUE DU MAGASIN commandés pour être livrés à l'entrepôt
-        const lignesProduitsEntrepot = estEntrepot && payload.lignes_magasin !== true;
         if (estEntrepot) {
             const ok = await CommandeAchat.estProprietaireEntrepot(id_entrepot, id_utilisateur);
             if (!ok) {
@@ -741,6 +739,42 @@ class AssistantAchat {
         if (!Array.isArray(groupes) || groupes.length === 0) {
             throw new Error('Aucun groupe de commande à créer');
         }
+
+        // ------------------------------------------------------------
+        // Nature de chaque ligne d'un bon livré à l'ENTREPÔT :
+        //   - 'entrepot' : produit de l'entrepôt (id_produit_entrepot)
+        //   - 'magasin'  : produit du catalogue du magasin livré à l'entrepôt (id_produit)
+        // La ligne se décrit elle-même : id_produit_entrepot => entrepôt ; id_produit seul => magasin
+        // (payload.lignes_magasin === true le confirme). Seul cas ambigu : un ancien écran qui envoie un
+        // id_produit SANS drapeau → on regarde où cet identifiant existe réellement.
+        // ------------------------------------------------------------
+        let idsEntrepot = null;
+        let idsMagasin = null;
+        if (estEntrepot && payload.lignes_magasin !== true) {
+            const besoinLookup = groupes.some(g => (g.lignes || []).some(l => !l.id_produit_entrepot && l.id_produit));
+            if (besoinLookup) {
+                const [pe] = await pool.execute(
+                    'SELECT id_produit_entrepot AS id FROM produits_entrepot WHERE id_entrepot = ? AND actif = 1',
+                    [id_entrepot]
+                );
+                const [pm] = await pool.execute(
+                    'SELECT id_produit AS id FROM produits WHERE id_utilisateur = ?',
+                    [id_utilisateur]
+                );
+                idsEntrepot = new Set(pe.map(r => Number(r.id)));
+                idsMagasin = new Set(pm.map(r => Number(r.id)));
+            }
+        }
+        const natureLigne = (l) => {
+            if (!estEntrepot) return 'magasin';
+            if (l.id_produit_entrepot) return 'entrepot';
+            if (!l.id_produit) return null;
+            if (payload.lignes_magasin === true) return 'magasin';
+            const id = Number(l.id_produit);
+            if (idsEntrepot?.has(id)) return 'entrepot';
+            if (idsMagasin?.has(id)) return 'magasin';
+            return 'entrepot'; // introuvable partout : l'erreur « non trouvé » sera explicite
+        };
 
         // ✅ Fusionner les groupes par fournisseur
         const groupesFusionnes = new Map();
@@ -771,7 +805,7 @@ class AssistantAchat {
                 const lignesValides = groupe.lignes
                     .filter(l => {
                         const q = Math.max(1, parseInt(l.quantite, 10) || 1);
-                        return q > 0 && (lignesProduitsEntrepot ? (l.id_produit_entrepot || l.id_produit) : l.id_produit);
+                        return q > 0 && natureLigne(l) !== null;
                     })
                     .map(l => {
                         const qteUV = Math.max(1, parseInt(l.quantite, 10) || 1);
@@ -779,7 +813,7 @@ class AssistantAchat {
                         const qteTotaleBase = l.quantite_totale_base || (qteUV * qteBase);
 
                         return {
-                            ...(lignesProduitsEntrepot
+                            ...(natureLigne(l) === 'entrepot'
                                 ? { id_produit_entrepot: l.id_produit_entrepot || l.id_produit }
                                 : { id_produit: l.id_produit }),
                             id_unite_vente: l.id_unite_vente || null,
