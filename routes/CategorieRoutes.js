@@ -2,7 +2,10 @@
 import express from 'express';
 import CategorieController from '../controllers/CategorieController.js';
 import { authenticateToken } from '../middleware/middleware.js';
-import { isAdmin } from '../middleware/roleMiddleware.js';
+import { requireRole } from '../middleware/roleMiddleware.js';
+
+// Mêmes profils que ceux qui voient la page Catégories dans le menu
+const peutModifier = requireRole('admin', 'manager', 'magasinier');
 
 const router = express.Router();
 
@@ -20,32 +23,31 @@ router.get('/export', CategorieController.exportCategories);
 router.get('/:id', CategorieController.getCategoryById);
 
 // =============================================================================
-// ROUTES PROTÉGÉES (admin uniquement)
-// ⚠️ IMPORTANT : authenticateToken D'ABORD, puis isAdmin
+// ROUTES PROTÉGÉES (admin, manager, magasinier)
 // =============================================================================
 
 // ✅ Une seule route POST (au lieu de 2)
 router.post(
     '/',
-    isAdmin,                          // ← après authenticateToken (déjà global)
+    peutModifier,
     CategorieController.createCategory
 );
 
 router.put(
     '/:id',
-    isAdmin,
+    peutModifier,
     CategorieController.updateCategory
 );
 
 router.patch(
     '/:id/status',
-    isAdmin,
+    peutModifier,
     CategorieController.updateCategoryStatus
 );
 
 router.delete(
     '/:id',
-    isAdmin,
+    peutModifier,
     CategorieController.deleteCategory
 );
 

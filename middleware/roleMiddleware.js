@@ -1,144 +1,60 @@
 // middlewares/roleMiddleware.js
-import { pool } from '../config/db.js';
+//
+// Contrôle des rôles côté serveur.
+//
+// ⚠️ L'ancienne version relisait le rôle dans la table `utilisateurs` avec `req.user.id`.
+//    Pour un EMPLOYÉ, `req.user.id` est un id_employe : on lisait donc le rôle d'un autre
+//    compte (ex. l'employé n°1 récupérait le rôle de l'utilisateur n°1, souvent un admin).
+//    Le rôle est maintenant pris dans `req.user.role`, déjà calculé correctement par
+//    authenticateToken (employé ou compte principal). Plus aucune requête SQL ici.
+import { authenticateToken } from './middleware.js';
 
-/**
- * Récupérer le rôle de l'utilisateur depuis la base de données
- */ 
-const getUserRole = async (userId) => {
-    try {
-        const [rows] = await pool.execute(
-            `SELECT r.nom as role 
-             FROM utilisateurs u
-             JOIN roles r ON u.id_role = r.id_role
-             WHERE u.id_utilisateur = ?`,
-            [userId]
-        );
-        console.log('le role : ',rows[0]?.role);
-        return rows[0]?.role || null;
-    } catch (error) {
-        console.error('❌ Erreur lors de la récupération du rôle:', error);
-        return null;
-    }
+const LIBELLES = {
+    admin: 'administrateur',
+    manager: 'manager',
+    caissier: 'caissier',
+    magasinier: 'magasinier',
 };
 
 /**
- * Middleware pour vérifier que l'utilisateur est admin
+ * requireRole('admin', 'manager', ...)
+ * Authentifie la requête si ce n'est pas déjà fait, puis vérifie le rôle.
+ * Utilisable seul (app.use('/api/x', requireRole('admin'), routes)) ou après authenticateToken.
  */
-export const isAdmin = async (req, res, next) => {
-    if (!req.user) {
-        return res.status(401).json({
-            success: false,
-            message: 'Non authentifié'
-        });
-    }
-
-    try {
-        const role = await getUserRole(req.user.id);
-        
+export const requireRole = (...roles) => (req, res, next) => {
+    const verifier = () => {
+        const role = req.user?.role || req.userRole;
         if (!role) {
+            return res.status(403).json({ success: false, message: 'Rôle non trouvé' });
+        }
+        if (!roles.includes(role)) {
+            const qui = roles.map((r) => LIBELLES[r] || r).join(', ');
             return res.status(403).json({
                 success: false,
-                message: 'Rôle non trouvé'
+                message: `Accès non autorisé. Action réservée aux profils : ${qui}.`,
             });
         }
+        return next();
+    };
 
-        if (role !== 'admin') {
-            return res.status(403).json({
-                success: false,
-                message: 'Accès non autorisé. Seul un administrateur peut effectuer cette action.'
-            });
-        }
-
-        // Ajouter le rôle à l'objet req pour un usage ultérieur
-        req.user.role = role;
-        next();
-    } catch (error) {
-        console.error('❌ Erreur dans isAdmin:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Erreur lors de la vérification des permissions'
-        });
-    }
+    if (req.user) return verifier();
+    return authenticateToken(req, res, verifier);
 };
 
 /**
- * Middleware pour vérifier que l'utilisateur est manager ou admin
+ * requireRoleForWrites('admin')
+ * Laisse passer les lectures (GET/HEAD/OPTIONS) à tout utilisateur connecté,
+ * mais réserve les écritures (POST/PUT/PATCH/DELETE) aux rôles donnés.
  */
-export const isManagerOrAdmin = async (req, res, next) => {
-    if (!req.user) {
-        return res.status(401).json({
-            success: false,
-            message: 'Non authentifié'
-        });
-    }
-
-    try {
-        const role = await getUserRole(req.user.id);
-        
-        console.log('🔍 Rôle récupéré pour l\'utilisateur:', req.user.id, '->', role);
-
-        if (!role) {
-            return res.status(403).json({
-                success: false,
-                message: 'Rôle non trouvé'
-            });
-        }
-
-        if (!['admin', 'manager'].includes(role)) {
-            return res.status(403).json({
-                success: false,
-                message: 'Accès non autorisé. Seul un manager ou un administrateur peut effectuer cette action.'
-            });
-        }
-
-        // Ajouter le rôle à l'objet req pour un usage ultérieur
-        req.user.role = role;
-        next();
-    } catch (error) {
-        console.error('❌ Erreur dans isManagerOrAdmin:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Erreur lors de la vérification des permissions'
-        });
-    }
+export const requireRoleForWrites = (...roles) => {
+    const guard = requireRole(...roles);
+    return (req, res, next) => {
+        if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+        return guard(req, res, next);
+    };
 };
 
-/**
- * Middleware pour vérifier que l'utilisateur est caissier, manager ou admin
- */
-export const isStaff = async (req, res, next) => {
-    if (!req.user) {
-        return res.status(401).json({
-            success: false,
-            message: 'Non authentifié'
-        });
-    }
-
-    try {
-        const role = await getUserRole(req.user.id);
-        
-        if (!role) {
-            return res.status(403).json({
-                success: false,
-                message: 'Rôle non trouvé'
-            });
-        }
-
-        if (!['admin', 'manager', 'caissier'].includes(role)) {
-            return res.status(403).json({
-                success: false,
-                message: 'Accès non autorisé. Vous devez être membre du staff.'
-            });
-        }
-
-        // Ajouter le rôle à l'objet req pour un usage ultérieur
-        req.user.role = role;
-        next();
-    } catch (error) {
-        console.error('❌ Erreur dans isStaff:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Erreur lors de la vérification des permissions'
-        });
-    }
-};
+/** Compatibilité avec le code existant */
+export const isAdmin = requireRole('admin');
+export const isManagerOrAdmin = requireRole('admin', 'manager');
+export const isStaff = requireRole('admin', 'manager', 'caissier');

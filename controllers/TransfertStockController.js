@@ -68,6 +68,18 @@ class TransfertStockController {
         }
     }
 
+    /* ---------- GET /transferts?statut=  (vue centrale, tous mes entrepôts) ---------- */
+    static async listMesTransferts(req, res) {
+        try {
+            const transferts = await TransfertStock.getMesTransferts(
+                req.workspaceId, TransfertStockController._statut(req)
+            );
+            res.json({ success: true, count: transferts.length, transferts });
+        } catch (error) {
+            TransfertStockController._sendError(res, error, "Erreur lors du chargement des transferts");
+        }
+    }
+
     /* ---------- GET /entrepots/:id_entrepot/transferts/en-attente/count ---------- */
     static async countEnAttente(req, res) {
         try {

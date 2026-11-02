@@ -27,6 +27,13 @@ import rapportStockRoutes from './routes/RapportStockRoutes.js';
 import beneficeRoutes from './routes/BeneficeRoutes.js';
 import alerteRoutes from './routes/AlerteRoutes.js';
 import recetteRoutes from './routes/RecetteRoutes.js';
+import depenseRoutes from './routes/DepenseRoutes.js';
+import caisseRoutes from './routes/CaisseRoutes.js';
+import detteFournisseurRoutes from './routes/DetteFournisseurRoutes.js';
+import journalRoutes from './routes/JournalRoutes.js';
+import relanceClientRoutes from './routes/RelanceClientRoutes.js';
+import horsLigneRoutes from './routes/HorsLigneRoutes.js';
+import { journalActivite } from './middleware/journal.js';
 import uniteVenteRoutes from './routes/UniteVenteRoutes.js';
 import magasinRoutes from './routes/MagasinRoutes.js';
 import employeRoutes from './routes/EmployeRoutes.js';
@@ -49,6 +56,7 @@ import gptRoutes from './routes/GptRoutes.js';
 
 import SuperAdminAuthRoutes from './routes/SuperAdminAuthRoutes.js';
 import { authenticateSuperAdmin } from './middleware/superAdminAuth.js';
+import { requireRole, requireRoleForWrites } from './middleware/roleMiddleware.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -104,6 +112,9 @@ app.use(cors({
 }));
 
 // ==================== ROUTES API PRINCIPALES ====================
+// Journal d'activité : enregistre automatiquement les actions réussies (avant toutes les routes)
+app.use('/api', journalActivite);
+
 app.use('/api/utilisateur', UtilisateurRoutes);
 app.use('/api/categories', categorieRoutes);
 app.use('/api/modeles', ModeleRoutes);
@@ -122,21 +133,32 @@ app.use('/api/mouvement-stock', MouvementStockRoutes);
 app.use('/api/inventaires', inventaireRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/clients', clientRoutes);
+// Rapports et bénéfices : admin et manager uniquement (comme le menu)
+app.use('/api/rapports', requireRole('admin', 'manager'));
 app.use('/api/rapports', rapportVenteRoutes);
 app.use('/api/rapports', rapportAchatRoutes);
 app.use('/api/rapports', rapportStockRoutes);
 app.use('/api/rapports', beneficeRoutes);
 app.use('/api/alertes', alerteRoutes);
 app.use('/api/recettes', recetteRoutes);
+app.use('/api/depenses', depenseRoutes);
+app.use('/api/caisse', caisseRoutes);
+app.use('/api/dettes-fournisseurs', detteFournisseurRoutes);
+app.use('/api/journal', journalRoutes);
+app.use('/api/relances', relanceClientRoutes);
+app.use('/api/hors-ligne', horsLigneRoutes);
 app.use('/api/unites-vente', uniteVenteRoutes);
-app.use('/api/magasin', magasinRoutes);
-app.use('/api/employes', employeRoutes);
+// Fiche du magasin : lecture pour tous, modification par l'admin
+app.use('/api/magasin', requireRoleForWrites('admin'), magasinRoutes);
+// Gestion des employés : admin uniquement
+app.use('/api/employes', requireRole('admin'), employeRoutes);
 app.use('/api/assistant-achat', assistantAchatRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/gpt', gptRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/super-admin/magasins', MagasinAdminRoutes);
-app.use('/api/super-admin/utilisateurs', UtilisateurAdminRoutes);
+// ⚠️ Espace SUPER ADMIN : jeton super admin obligatoire
+app.use('/api/admin', authenticateSuperAdmin, adminRoutes);
+app.use('/api/super-admin/magasins', authenticateSuperAdmin, MagasinAdminRoutes);
+app.use('/api/super-admin/utilisateurs', authenticateSuperAdmin, UtilisateurAdminRoutes);
 app.use('/api/super-admin/auth', SuperAdminAuthRoutes);
 app.use('/api', ProduitEntrepotRoutes); 
 app.use('/api', MouvementEntrepotRoutes);

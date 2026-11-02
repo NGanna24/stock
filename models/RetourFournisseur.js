@@ -383,10 +383,12 @@ class RetourFournisseur {
 
                     await connection.execute(
                         `INSERT INTO sorties_stock (
-                            id_utilisateur, reference, date_sortie, id_produit, quantite, type_sortie, notes
-                         ) VALUES (?, ?, ?, ?, ?, 'retour_fournisseur', ?)`,
+                            id_utilisateur, reference, date_sortie, id_produit, quantite, quantite_totale_base, type_sortie, notes
+                         ) VALUES (?, ?, ?, ?, ?, ?, 'retour_fournisseur', ?)`,
+                        // quantite_totale_base est NOT NULL sans défaut : l'oublier fait échouer
+                        // tout retour fournisseur côté magasin (mode strict de MySQL 8).
                         [id_utilisateur, `SORTIE-RET-${Date.now()}-${lc.id_produit}`, date_retour, lc.id_produit,
-                         lc.quantite, lc.notes_ligne || `Retour fournisseur ${numero_retour}`]
+                         lc.quantite, lc.quantite, lc.notes_ligne || `Retour fournisseur ${numero_retour}`]
                     );
                 }
 

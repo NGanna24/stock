@@ -695,6 +695,69 @@ CREATE TABLE IF NOT EXISTS commandes_vente (
     FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Ventes faites hors ligne et déjà reçues par le serveur (évite les doublons à la synchronisation)
+-- id_local = identifiant unique créé sur l'appareil au moment de la vente.
+CREATE TABLE IF NOT EXISTS ventes_hors_ligne (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    id_utilisateur INT NOT NULL,
+    id_local VARCHAR(64) NOT NULL,
+    numero_provisoire VARCHAR(50),
+    id_commande INT NULL,
+    paiements_appliques INT NOT NULL DEFAULT 0,
+    stock_force TINYINT(1) NOT NULL DEFAULT 0,
+    date_vente_locale DATETIME NULL,
+    vendeur_type ENUM('utilisateur', 'employe') NOT NULL DEFAULT 'utilisateur',
+    vendeur_id INT NOT NULL,
+    vendeur_nom VARCHAR(100),
+    date_reception DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_vente_locale (id_utilisateur, id_local),
+    INDEX idx_vhl_commande (id_commande),
+    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- =============================================================================
+-- CAISSE JOURNALIÈRE (sessions d'ouverture / clôture du tiroir-caisse)
+-- Une seule session « ouverte » à la fois par compte (contrôlé par l'application).
+-- Les montants calculés sont FIGÉS à la clôture (historique fiable même si des
+-- paiements sont modifiés plus tard).
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS sessions_caisse (
+    id_session INT PRIMARY KEY AUTO_INCREMENT,
+    id_utilisateur INT NOT NULL,
+    statut ENUM('ouverte', 'cloturee') NOT NULL DEFAULT 'ouverte',
+
+    date_ouverture DATETIME NOT NULL,
+    ouvert_par_type ENUM('utilisateur', 'employe') NOT NULL DEFAULT 'utilisateur',
+    ouvert_par_id INT NOT NULL,
+    ouvert_par_nom VARCHAR(100),
+    fond_initial DECIMAL(15, 2) NOT NULL DEFAULT 0,
+    note_ouverture TEXT,
+
+    date_cloture DATETIME NULL,
+    cloture_par_type ENUM('utilisateur', 'employe') NULL,
+    cloture_par_id INT NULL,
+    cloture_par_nom VARCHAR(100),
+    especes_encaissees DECIMAL(15, 2) NULL,
+    especes_remboursees DECIMAL(15, 2) NULL,
+    depenses_especes DECIMAL(15, 2) NULL,
+    autres_encaissements DECIMAL(15, 2) NULL,
+    montant_theorique DECIMAL(15, 2) NULL,
+    montant_compte DECIMAL(15, 2) NULL,
+    ecart DECIMAL(15, 2) NULL,
+    detail_comptage TEXT,
+    note_cloture TEXT,
+
+    date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_utilisateur_statut (id_utilisateur, statut),
+    INDEX idx_ouverture (id_utilisateur, date_ouverture),
+    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+
+
 -- Lignes de commande de vente
 -- quantite = quantité en unité de vente choisie (ex: 1 carton)
 -- quantite_base = conversion (ex: 12)
@@ -853,6 +916,59 @@ CREATE TABLE IF NOT EXISTS retour_client_lignes (
     FOREIGN KEY (id_produit) REFERENCES produits(id_produit) ON DELETE CASCADE,
     FOREIGN KEY (id_ligne_commande_vente) REFERENCES ligne_commande_vente(id_ligne_vente) ON DELETE SET NULL,
     FOREIGN KEY (id_unite_vente) REFERENCES unites_vente(id_unite_vente) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+
+-- =============================================================================
+-- PAIEMENTS AUX FOURNISSEURS (dettes fournisseurs)
+-- Dette d'un fournisseur = réceptions (non annulées) − retours traités − paiements.
+-- id_commande_achat NULL = avance / acompte non affecté à une commande.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS paiements_fournisseurs (
+    id_paiement_fournisseur INT PRIMARY KEY AUTO_INCREMENT,
+    id_utilisateur INT NOT NULL,
+    id_fournisseur INT NOT NULL,
+    id_commande_achat INT NULL,
+    date_paiement DATE NOT NULL,
+    montant DECIMAL(15, 2) NOT NULL,
+    mode_paiement ENUM('especes', 'mobile_money', 'virement', 'cheque', 'carte', 'autre') NOT NULL DEFAULT 'especes',
+    reference VARCHAR(100),
+    note TEXT,
+    cree_par_type ENUM('utilisateur', 'employe') NOT NULL DEFAULT 'utilisateur',
+    cree_par_id INT NOT NULL,
+    cree_par_nom VARCHAR(100),
+    date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_utilisateur_fournisseur (id_utilisateur, id_fournisseur),
+    INDEX idx_commande (id_commande_achat),
+    INDEX idx_date (id_utilisateur, date_paiement),
+    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
+    FOREIGN KEY (id_fournisseur) REFERENCES fournisseurs(id_fournisseur) ON DELETE CASCADE,
+    FOREIGN KEY (id_commande_achat) REFERENCES commandes_achat(id_commande_achat) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- Relances clients (rappels d'impayés envoyés par WhatsApp / SMS / appel)
+-- Le client est identifié par son téléphone (comme dans commandes_vente).
+CREATE TABLE IF NOT EXISTS relances_clients (
+    id_relance INT PRIMARY KEY AUTO_INCREMENT,
+    id_utilisateur INT NOT NULL,
+    telephone VARCHAR(200) NOT NULL,
+    nomclient VARCHAR(200),
+    canal ENUM('whatsapp', 'sms', 'appel', 'autre') NOT NULL DEFAULT 'whatsapp',
+    montant_du DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+    nb_factures INT NOT NULL DEFAULT 0,
+    factures VARCHAR(500),
+    message TEXT,
+    note VARCHAR(255),
+    par_type ENUM('utilisateur', 'employe') NOT NULL DEFAULT 'utilisateur',
+    par_id INT NOT NULL,
+    par_nom VARCHAR(100),
+    date_relance DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_relance_client (id_utilisateur, telephone, date_relance),
+    INDEX idx_relance_date (id_utilisateur, date_relance),
+    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================
@@ -1346,6 +1462,32 @@ CREATE TABLE IF NOT EXISTS inventaire_lignes_entrepot (
     CONSTRAINT fk_ile_inventaire  FOREIGN KEY (id_inventaire_entrepot) REFERENCES inventaires_entrepot(id_inventaire_entrepot) ON DELETE CASCADE,
     CONSTRAINT fk_ile_produit     FOREIGN KEY (id_produit_entrepot)    REFERENCES produits_entrepot(id_produit_entrepot)       ON DELETE CASCADE,
     CONSTRAINT fk_ile_emplacement FOREIGN KEY (id_emplacement)         REFERENCES emplacements(id_emplacement)                 ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE IF NOT EXISTS journal_activite (
+    id_journal BIGINT PRIMARY KEY AUTO_INCREMENT,
+    id_utilisateur INT NOT NULL,
+    acteur_type ENUM('utilisateur', 'employe') NOT NULL DEFAULT 'utilisateur',
+    acteur_id INT NOT NULL,
+    acteur_nom VARCHAR(100),
+    acteur_role VARCHAR(50),
+    action VARCHAR(30) NOT NULL,
+    module VARCHAR(50) NOT NULL,
+    libelle VARCHAR(255) NOT NULL,
+    reference VARCHAR(120),
+    entite_id INT NULL,
+    methode VARCHAR(10) NOT NULL,
+    chemin VARCHAR(255) NOT NULL,
+    statut_http SMALLINT,
+    details TEXT,
+    ip VARCHAR(64),
+    user_agent VARCHAR(255),
+    date_action DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_journal_date (id_utilisateur, date_action),
+    INDEX idx_journal_acteur (id_utilisateur, acteur_type, acteur_id, date_action),
+    INDEX idx_journal_module (id_utilisateur, module, date_action),
+    FOREIGN KEY (id_utilisateur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================

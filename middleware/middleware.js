@@ -17,6 +17,8 @@ import Employe from '../models/Employe.js';
  * ============================================================
  */
 export const authenticateToken = (req, res, next) => {
+    // Déjà authentifié plus haut (ex. par requireRole monté dans app.js) : on ne refait pas le travail
+    if (req.user && req.workspaceId) return next();
     try {
         const authHeader = req.headers['authorization'];
         const token = authHeader && authHeader.split(' ')[1];

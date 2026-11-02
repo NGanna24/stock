@@ -1,0 +1,44 @@
+diff --git a/app.js b/app.js
+index 3dcb3ad..f8a3e69 100644
+--- a/app.js
++++ b/app.js
+@@ -50,6 +50,7 @@ import gptRoutes from './routes/GptRoutes.js';
+ 
+ import SuperAdminAuthRoutes from './routes/SuperAdminAuthRoutes.js';
+ import { authenticateSuperAdmin } from './middleware/superAdminAuth.js';
++import { requireRole, requireRoleForWrites } from './middleware/roleMiddleware.js';
+ import path from 'path';
+ import { fileURLToPath } from 'url';
+ 
+@@ -123,6 +124,8 @@ app.use('/api/mouvement-stock', MouvementStockRoutes);
+ app.use('/api/inventaires', inventaireRoutes);
+ app.use('/api/dashboard', dashboardRoutes);
+ app.use('/api/clients', clientRoutes);
++// Rapports et bénéfices : admin et manager uniquement (comme le menu)
++app.use('/api/rapports', requireRole('admin', 'manager'));
+ app.use('/api/rapports', rapportVenteRoutes);
+ app.use('/api/rapports', rapportAchatRoutes);
+ app.use('/api/rapports', rapportStockRoutes);
+@@ -131,14 +134,17 @@ app.use('/api/alertes', alerteRoutes);
+ app.use('/api/recettes', recetteRoutes);
+ app.use('/api/depenses', depenseRoutes);
+ app.use('/api/unites-vente', uniteVenteRoutes);
+-app.use('/api/magasin', magasinRoutes);
+-app.use('/api/employes', employeRoutes);
++// Fiche du magasin : lecture pour tous, modification par l'admin
++app.use('/api/magasin', requireRoleForWrites('admin'), magasinRoutes);
++// Gestion des employés : admin uniquement
++app.use('/api/employes', requireRole('admin'), employeRoutes);
+ app.use('/api/assistant-achat', assistantAchatRoutes);
+ app.use('/api/search', searchRoutes);
+ app.use('/api/gpt', gptRoutes);
+-app.use('/api/admin', adminRoutes);
+-app.use('/api/super-admin/magasins', MagasinAdminRoutes);
+-app.use('/api/super-admin/utilisateurs', UtilisateurAdminRoutes);
++// ⚠️ Espace SUPER ADMIN : jeton super admin obligatoire
++app.use('/api/admin', authenticateSuperAdmin, adminRoutes);
++app.use('/api/super-admin/magasins', authenticateSuperAdmin, MagasinAdminRoutes);
++app.use('/api/super-admin/utilisateurs', authenticateSuperAdmin, UtilisateurAdminRoutes);
+ app.use('/api/super-admin/auth', SuperAdminAuthRoutes);
+ app.use('/api', ProduitEntrepotRoutes); 
+ app.use('/api', MouvementEntrepotRoutes);

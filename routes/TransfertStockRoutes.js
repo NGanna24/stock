@@ -8,6 +8,9 @@ import { authenticateToken } from '../middleware/middleware.js';
 
 const router = express.Router();
 
+// Vue centrale : tous mes transferts, tous entrepôts confondus (page /transferts)
+router.get('/transferts', authenticateToken, TransfertStockController.listMesTransferts);
+
 router.get(
     '/entrepots/:id_entrepot/transferts/en-attente/count',
     authenticateToken,

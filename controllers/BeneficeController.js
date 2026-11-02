@@ -1,5 +1,6 @@
 // controllers/BeneficeController.js
 import Benefice from '../models/Benefice.js';
+import Depense from '../models/Depense.js';
 
 class BeneficeController {
     /**
@@ -26,7 +27,9 @@ class BeneficeController {
                 parJour,
                 topProduits,
                 topClients,
-                produitsRentables
+                produitsRentables,
+                depensesTotal,
+                depensesParCategorie
             ] = await Promise.all([
                 Benefice.getBeneficesByPeriod(debut, fin, req.workspaceId),
                 Benefice.getTotauxBenefices(debut, fin, req.workspaceId),
@@ -35,14 +38,32 @@ class BeneficeController {
                 Benefice.getBeneficesParJour(debut, fin, req.workspaceId),
                 Benefice.getTopProduitsBenefice(debut, fin, req.workspaceId, 10),
                 Benefice.getTopClientsBenefice(debut, fin, req.workspaceId, 10),
-                Benefice.getProduitsPlusRentables(debut, fin, req.workspaceId, 10)
+                Benefice.getProduitsPlusRentables(debut, fin, req.workspaceId, 10),
+                Depense.getTotal(req.workspaceId, debut, fin),
+                Depense.getParCategorie(req.workspaceId, debut, fin)
             ]);
+
+            // Bénéfice net = bénéfice brut (ou estimé) - dépenses de fonctionnement
+            const brut = totaux.benefice_disponible ? totaux.benefice_brut : totaux.benefice_estime;
+            const net = (parseFloat(brut) || 0) - depensesTotal.total;
+            const resultat_net = {
+                benefice_brut: parseFloat(brut) || 0,
+                depenses: depensesTotal.total,
+                nombre_depenses: depensesTotal.nombre,
+                benefice_net: Math.round(net * 100) / 100,
+                estimation: !totaux.benefice_disponible,
+                marge_nette_pct: totaux.chiffre_affaires > 0
+                    ? Math.round((net / totaux.chiffre_affaires) * 10000) / 100
+                    : null,
+                depenses_par_categorie: depensesParCategorie,
+            };
 
             res.status(200).json({
                 success: true,
                 data: {
                     periode: { dateDebut: debut, dateFin: fin },
                     totaux,
+                    resultat_net,
                     commandes,
                     par_produit: parProduit,
                     par_categorie: parCategorie,

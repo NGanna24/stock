@@ -854,6 +854,54 @@ class TransfertStock {
         return { est_proprietaire, transferts: rows.map((r) => this._cast(r)) };
     }
 
+    /**
+     * Vue centrale (page /transferts) : tous MES transferts, tous entrepôts confondus.
+     *   - entrepôts dont je suis propriétaire : toutes les demandes (je les approuve)
+     *   - autres entrepôts : seulement mes propres demandes
+     * Chaque ligne porte `est_proprietaire` et `id_entrepot_source` pour savoir
+     * quelles actions proposer et sur quelle route les envoyer.
+     */
+    static async getMesTransferts(id_utilisateur, statut = null) {
+        const params = [id_utilisateur, id_utilisateur, id_utilisateur];
+        let filtre = '';
+        if (statut) {
+            filtre = ' AND t.statut = ?';
+            params.push(statut);
+        }
+
+        const [rows] = await pool.execute(
+            `SELECT t.*,
+                    (e.id_utilisateur_proprietaire = ?) AS est_proprietaire,
+                    pe.nom AS produit_nom, pe.quantite_stock AS stock_entrepot,
+                    ma.nom AS marque_nom, mo.nom AS modele_nom,
+                    un.nom AS unite_nom, un.symbole AS unite_symbole,
+                    dem.fullname AS demandeur_nom,
+                    mg.nom_commercial AS magasin_nom, mg.ville AS magasin_ville,
+                    p.nom AS produit_destination_nom,
+                    e.nom AS entrepot_nom, e.ville AS entrepot_ville, e.adresse AS entrepot_adresse,
+                    val.fullname AS approbateur_nom
+               FROM transferts_stock t
+               JOIN entrepots e ON e.id_entrepot = t.id_entrepot_source AND e.actif = 1
+               LEFT JOIN utilisateurs val ON val.id_utilisateur = t.id_utilisateur_validateur
+               JOIN produits_entrepot pe ON pe.id_produit_entrepot = t.id_produit_entrepot
+               LEFT JOIN marques ma ON ma.id_marque = pe.id_marque
+               LEFT JOIN modeles mo ON mo.id_modele = pe.id_modele
+               LEFT JOIN unites un  ON un.id_unite  = pe.id_unite
+               JOIN utilisateurs dem ON dem.id_utilisateur = t.id_utilisateur_destination
+               LEFT JOIN magasins mg ON mg.id_magasin = t.id_magasin_destination
+               LEFT JOIN produits p ON p.id_produit = t.id_produit_destination
+              WHERE (e.id_utilisateur_proprietaire = ? OR t.id_utilisateur_destination = ?)${filtre}
+              ORDER BY (t.statut = 'en_attente') DESC, t.date_creation DESC, t.id_transfert DESC
+              LIMIT 1000`,
+            params
+        );
+        return rows.map((r) => {
+            const t = this._cast(r);
+            t.est_proprietaire = Number(t.est_proprietaire) === 1;
+            return t;
+        });
+    }
+
     /** Demandes en attente : pour le propriétaire toutes, pour un membre les siennes */
     static async countEnAttente(id_entrepot, id_utilisateur) {
         const est_proprietaire = await this.estProprietaire(id_entrepot, id_utilisateur);

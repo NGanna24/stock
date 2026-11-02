@@ -4,8 +4,7 @@ import AdminController from '../controllers/AdminController.js';
 
 const router = express.Router();
 
-// ⚠️ AUCUNE SÉCURITÉ POUR L'INSTANT
-// À renforcer plus tard avec authenticateToken + requireSuperAdmin
+// Protégé dans app.js par authenticateSuperAdmin (jeton super admin obligatoire)
 
 // ==================== DASHBOARD ====================
 router.get('/dashboard', AdminController.getDashboard);
