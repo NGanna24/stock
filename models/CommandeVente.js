@@ -163,7 +163,9 @@ class CommandeVente {
 
                 // --- Vérifier le stock en UNITÉ DE BASE ---
                 const stockDisponible = parseFloat(produitRows[0].quantite_stock) || 0;
-                if (qteTotaleBase > stockDisponible) {
+                // Vente faite hors ligne : elle a déjà eu lieu, on l'enregistre même si le stock
+                // est devenu insuffisant (le stock peut passer en négatif ; signalé à l'utilisateur)
+                if (qteTotaleBase > stockDisponible && !data.autoriser_stock_negatif) {
                     throw new Error(
                         `Stock insuffisant pour "${produitRows[0].nom}". ` +
                         `Disponible: ${stockDisponible} unités de base, Demandé: ${qteTotaleBase} unités de base`
