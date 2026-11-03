@@ -5,6 +5,7 @@
 //   - 'entrepot' : le stock de l'entrepôt augmente (produits_entrepot,
 //                  entrees_stock_entrepot, mouvements_entrepot) — propriétaire seulement.
 import { pool } from '../config/db.js';
+import { prochainNumero, prefixeDuMois } from '../utils/numerotation.js';
 import MouvementStock from './MouvementStock.js';
 import CommandeAchat from './CommandeAchat.js';
 
@@ -31,26 +32,8 @@ class Reception {
        REC-202610-0001 (magasin)  /  REE-202610-0001 (entrepôt)
        ============================================================ */
     static async genererNumero(id_utilisateur, destination = 'magasin', db = pool) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour genererNumero');
-        }
-
-        const date = new Date();
-        const annee = date.getFullYear();
-        const mois = String(date.getMonth() + 1).padStart(2, '0');
-        const prefixe = destination === 'entrepot' ? 'REE' : 'REC';
-
-        const [rows] = await db.execute(
-            `SELECT COUNT(*) as count FROM receptions
-             WHERE id_utilisateur = ?
-               AND destination = ?
-               AND YEAR(date_creation) = ?
-               AND MONTH(date_creation) = ?`,
-            [id_utilisateur, destination, annee, mois]
-        );
-
-        const count = rows[0].count + 1;
-        return `${prefixe}-${annee}${mois}-${String(count).padStart(4, '0')}`;
+        const code = destination === 'entrepot' ? 'REE' : 'REC';
+        return prochainNumero({ table: 'receptions', prefixe: prefixeDuMois(code), id_utilisateur, db });
     }
 
     /* ============================================================
@@ -173,6 +156,7 @@ class Reception {
         }
 
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
@@ -608,13 +592,15 @@ class Reception {
             }
 
             await connection.commit();
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
             return await this.findById(id_reception, id_utilisateur);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 

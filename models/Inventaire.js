@@ -1,5 +1,6 @@
 // models/Inventaire.js
 import { pool } from '../config/db.js';
+import { prochainNumero, prefixeDuMois } from '../utils/numerotation.js';
 import MouvementStock from './MouvementStock.js';
 
 class Inventaire {
@@ -8,26 +9,8 @@ class Inventaire {
      * Générer une référence unique PAR WORKSPACE
      * ============================================================
      */
-    static async genererReference(id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour genererReference');
-        }
-
-        const date = new Date();
-        const annee = date.getFullYear();
-        const mois = String(date.getMonth() + 1).padStart(2, '0');
-
-        const [rows] = await pool.execute(
-            `SELECT COUNT(*) as count
-             FROM inventaires
-             WHERE id_utilisateur = ?
-               AND YEAR(date_creation) = ?
-               AND MONTH(date_creation) = ?`,
-            [id_utilisateur, annee, mois]
-        );
-
-        const count = rows[0].count + 1;
-        return `INV-${annee}${mois}-${String(count).padStart(4, '0')}`;
+    static async genererReference(id_utilisateur, db = pool) {
+        return prochainNumero({ table: 'inventaires', prefixe: prefixeDuMois('INV'), id_utilisateur, db });
     }
 
     /**
@@ -52,10 +35,11 @@ class Inventaire {
         }
 
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
-            const reference = await this.genererReference(id_utilisateur);
+            const reference = await this.genererReference(id_utilisateur, connection);
 
             const [result] = await connection.execute(
                 `INSERT INTO inventaires (
@@ -73,13 +57,15 @@ class Inventaire {
             );
 
             await connection.commit();
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
             return await this.findById(result.insertId, id_utilisateur);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 
@@ -92,6 +78,7 @@ class Inventaire {
         if (!id_utilisateur) throw new Error('id_utilisateur requis pour demarrer');
 
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
@@ -143,13 +130,15 @@ class Inventaire {
             );
 
             await connection.commit();
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
             return await this.findById(id, id_utilisateur);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 
@@ -400,6 +389,7 @@ class Inventaire {
         if (!id_utilisateur) throw new Error('id_utilisateur requis pour annuler');
 
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
@@ -421,13 +411,15 @@ class Inventaire {
             );
 
             await connection.commit();
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
             return await this.findById(id, id_utilisateur);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 

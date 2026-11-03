@@ -1,5 +1,6 @@
 // models/Facture.js
 import { pool } from '../config/db.js';
+import { prochainNumero, prefixeDuMois } from '../utils/numerotation.js';
 
 class Facture {
     /**
@@ -7,26 +8,8 @@ class Facture {
      * Générer un numéro de facture unique PAR WORKSPACE
      * ============================================================
      */
-    static async genererNumero(id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour genererNumero');
-        }
-
-        const date = new Date();
-        const annee = date.getFullYear();
-        const mois = String(date.getMonth() + 1).padStart(2, '0');
- 
-        const [rows] = await pool.execute( 
-            `SELECT COUNT(*) as count
-             FROM factures_vente
-             WHERE id_utilisateur = ?
-               AND YEAR(date_creation) = ?
-               AND MONTH(date_creation) = ?`,
-            [id_utilisateur, annee, mois]
-        );
-
-        const count = rows[0].count + 1;
-        return `FV-${annee}${mois}-${String(count).padStart(4, '0')}`;
+    static async genererNumero(id_utilisateur, db = pool) {
+        return prochainNumero({ table: 'factures_vente', prefixe: prefixeDuMois('FV'), id_utilisateur, db });
     }
 
     /**
@@ -327,11 +310,12 @@ class Facture {
         }
 
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
             // ✅ Générer le numéro DANS le workspace
-            const numero_facture = await this.genererNumero(id_utilisateur);
+            const numero_facture = await this.genererNumero(id_utilisateur, connection);
 
             const [result] = await connection.execute(
                 `INSERT INTO factures_vente (
@@ -353,13 +337,15 @@ class Facture {
             const id_facture = result.insertId;
 
             await connection.commit();
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
             return await this.findById(id_facture, id_utilisateur);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 

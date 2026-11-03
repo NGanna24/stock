@@ -1,5 +1,6 @@
 // models/CommandeVente.js
 import { pool } from '../config/db.js';
+import { prochainNumero, prefixeDuMois, estDoublonNumero, attendreUnPeu } from '../utils/numerotation.js';
 import MouvementStock from './MouvementStock.js';
 
 class CommandeVente {
@@ -8,26 +9,9 @@ class CommandeVente {
      * Générer un numéro de commande unique PAR WORKSPACE
      * ============================================================
      */
-    static async genererNumero(id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour genererNumero');
-        }
-
-        const date = new Date();
-        const annee = date.getFullYear();
-        const mois = String(date.getMonth() + 1).padStart(2, '0');
-
-        const [rows] = await pool.execute(
-            `SELECT COUNT(*) as count
-             FROM commandes_vente
-             WHERE id_utilisateur = ?
-               AND YEAR(date_creation) = ?
-               AND MONTH(date_creation) = ?`,
-            [id_utilisateur, annee, mois]
-        );
-
-        const count = rows[0].count + 1;
-        return `CV-${annee}${mois}-${String(count).padStart(4, '0')}`;
+    static async genererNumero(id_utilisateur, db = pool) {
+        // Plus grand numéro du mois + 1 (et non COUNT : une vente supprimée libérait un numéro déjà pris)
+        return prochainNumero({ table: 'commandes_vente', prefixe: prefixeDuMois('CV'), id_utilisateur, db });
     }
 
     /**
@@ -35,26 +19,8 @@ class CommandeVente {
      * Générer un numéro de facture unique PAR WORKSPACE
      * ============================================================
      */
-    static async genererNumeroFacture(id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour genererNumeroFacture');
-        }
-
-        const date = new Date();
-        const annee = date.getFullYear();
-        const mois = String(date.getMonth() + 1).padStart(2, '0');
-
-        const [rows] = await pool.execute(
-            `SELECT COUNT(*) as count
-             FROM factures_vente
-             WHERE id_utilisateur = ?
-               AND YEAR(date_creation) = ?
-               AND MONTH(date_creation) = ?`,
-            [id_utilisateur, annee, mois]
-        );
-
-        const count = rows[0].count + 1;
-        return `FV-${annee}${mois}-${String(count).padStart(4, '0')}`;
+    static async genererNumeroFacture(id_utilisateur, db = pool) {
+        return prochainNumero({ table: 'factures_vente', prefixe: prefixeDuMois('FV'), id_utilisateur, db });
     }
 
     /**
@@ -70,7 +36,11 @@ class CommandeVente {
      */
     static async create(data) {
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
+            // Lecture « validée » : chaque recherche de numéro voit les ventes déjà enregistrées
+            // par les autres caisses (indispensable pour reprendre après un doublon de numéro)
+            await connection.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
             await connection.beginTransaction();
 
             const {
@@ -187,26 +157,33 @@ class CommandeVente {
             // ============================================================
             // 2. GÉNÉRATION DES NUMÉROS
             // ============================================================
-            const numero_commande = await this.genererNumero(id_utilisateur);
-            const numero_facture = await this.genererNumeroFacture(id_utilisateur);
-
-            // ============================================================
-            // 3. CRÉATION DE LA COMMANDE
-            // ============================================================
-            const [result] = await connection.execute(
-                `INSERT INTO commandes_vente (
-                    id_utilisateur, numero_commande, date_commande,
-                    nomclient, telephone, statut, montant_total, notes
-                ) VALUES (?, ?, ?, ?, ?, 'en_attente', 0.00, ?)`,
-                [
-                    id_utilisateur,
-                    numero_commande,
-                    date_commande,
-                    nomclient,
-                    telephone,
-                    notes || null
-                ]
-            );
+            // Numéro = plus grand du mois + 1. Si deux ventes sont validées au même instant,
+            // la seconde reçoit « doublon » : on reprend simplement le numéro suivant.
+            let numero_commande;
+            let result;
+            for (let essai = 1; ; essai++) {
+                numero_commande = await this.genererNumero(id_utilisateur, connection);
+                try {
+                    [result] = await connection.execute(
+                        `INSERT INTO commandes_vente (
+                            id_utilisateur, numero_commande, date_commande,
+                            nomclient, telephone, statut, montant_total, notes
+                        ) VALUES (?, ?, ?, ?, ?, 'en_attente', 0.00, ?)`,
+                        [
+                            id_utilisateur,
+                            numero_commande,
+                            date_commande,
+                            nomclient,
+                            telephone,
+                            notes || null
+                        ]
+                    );
+                    break;
+                } catch (err) {
+                    if (!estDoublonNumero(err) || essai >= 15) throw err;
+                    await attendreUnPeu();
+                }
+            }
 
             const id_commande = result.insertId;
             let montant_total = 0;
@@ -313,31 +290,42 @@ await connection.execute(
             const date_echeance_facture = date_echeance
                 || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-            await connection.execute(
-                `INSERT INTO factures_vente (
-                    id_utilisateur, numero_facture, date_facture, date_echeance,
-                    id_commande, montant_total, statut, mode_paiement, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, 'en_attente', ?, ?)`,
-                [
-                    id_utilisateur,
-                    numero_facture,
-                    date_commande,
-                    date_echeance_facture,
-                    id_commande,
-                    montant_total,
-                    mode_paiement || 'especes',
-                    notes || `Facture pour commande ${numero_commande}`
-                ]
-            );
+            for (let essai = 1; ; essai++) {
+                const numero_facture = await this.genererNumeroFacture(id_utilisateur, connection);
+                try {
+                    await connection.execute(
+                        `INSERT INTO factures_vente (
+                            id_utilisateur, numero_facture, date_facture, date_echeance,
+                            id_commande, montant_total, statut, mode_paiement, notes
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'en_attente', ?, ?)`,
+                        [
+                            id_utilisateur,
+                            numero_facture,
+                            date_commande,
+                            date_echeance_facture,
+                            id_commande,
+                            montant_total,
+                            mode_paiement || 'especes',
+                            notes || `Facture pour commande ${numero_commande}`
+                        ]
+                    );
+                    break;
+                } catch (err) {
+                    if (!estDoublonNumero(err) || essai >= 15) throw err;
+                    await attendreUnPeu();
+                }
+            }
 
             await connection.commit();
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
             return await this.findById(id_commande, id_utilisateur);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 

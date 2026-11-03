@@ -45,6 +45,7 @@ class Entrepot {
      */
     static async create(data, id_utilisateur_proprietaire) {
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
@@ -83,13 +84,15 @@ class Entrepot {
             );
 
             await connection.commit();
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
             return await this.findById(id_entrepot);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 
@@ -104,6 +107,7 @@ class Entrepot {
         }
 
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
@@ -143,13 +147,15 @@ class Entrepot {
             );
 
             await connection.commit();
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
             return await this.findById(entrepot.id_entrepot);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 

@@ -1,5 +1,6 @@
 // models/RetourClient.js
 import { pool } from '../config/db.js';
+import { prochainNumero, prefixeDuMois } from '../utils/numerotation.js';
 import MouvementStock from './MouvementStock.js';
 
 class RetourClient {
@@ -9,26 +10,8 @@ class RetourClient {
      * Format : RT-YYYYMM-XXXX (ex: RT-202409-0001)
      * ============================================================
      */
-    static async genererNumero(id_utilisateur) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour genererNumero');
-        }
-
-        const date = new Date();
-        const annee = date.getFullYear();
-        const mois = String(date.getMonth() + 1).padStart(2, '0');
-
-        const [rows] = await pool.execute(
-            `SELECT COUNT(*) as count
-             FROM retours_clients
-             WHERE id_utilisateur = ?
-               AND YEAR(date_creation) = ?
-               AND MONTH(date_creation) = ?`,
-            [id_utilisateur, annee, mois]
-        );
-
-        const count = rows[0].count + 1;
-        return `RT-${annee}${mois}-${String(count).padStart(4, '0')}`;
+    static async genererNumero(id_utilisateur, db = pool) {
+        return prochainNumero({ table: 'retours_clients', prefixe: prefixeDuMois('RT'), id_utilisateur, db });
     }
 
     /**
@@ -123,6 +106,7 @@ class RetourClient {
         if (!lignes.length) throw new Error('Au moins un produit est requis');
 
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
@@ -243,7 +227,7 @@ class RetourClient {
             // ============================================================
             // 5. GÉNÉRER LE NUMÉRO DE RETOUR
             // ============================================================
-            const numero_retour = await this.genererNumero(id_utilisateur);
+            const numero_retour = await this.genererNumero(id_utilisateur, connection);
 
             // ============================================================
             // 6. CRÉER LE RETOUR
@@ -373,13 +357,17 @@ class RetourClient {
 
             await connection.commit();
 
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+
+            connexionRendue = true;
+
             return await this.findById(id_retour, id_utilisateur);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 

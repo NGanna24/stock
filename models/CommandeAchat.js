@@ -6,6 +6,7 @@
 //                  réservé au PROPRIÉTAIRE de l'entrepôt.
 // Les commandes restent rattachées au compte (id_utilisateur = workspace).
 import { pool } from '../config/db.js';
+import { prochainNumero, prefixeDuMois } from '../utils/numerotation.js';
 
 const fail = (message, statusCode = 400) => {
     const err = new Error(message);
@@ -66,27 +67,8 @@ class CommandeAchat {
        CA-202610-0001 (magasin)  /  CAE-202610-0001 (entrepôt)
        ============================================================ */
     static async genererNumero(id_utilisateur, destination = 'magasin', db = pool) {
-        if (!id_utilisateur) {
-            throw new Error('id_utilisateur requis pour genererNumero');
-        }
-
-        const date = new Date();
-        const annee = date.getFullYear();
-        const mois = String(date.getMonth() + 1).padStart(2, '0');
-        const prefixe = destination === 'entrepot' ? 'CAE' : 'CA';
-
-        const [rows] = await db.execute(
-            `SELECT COUNT(*) as count
-             FROM commandes_achat
-             WHERE id_utilisateur = ?
-               AND destination = ?
-               AND YEAR(date_creation) = ?
-               AND MONTH(date_creation) = ?`,
-            [id_utilisateur, destination, annee, mois]
-        );
-
-        const count = rows[0].count + 1;
-        return `${prefixe}-${annee}${mois}-${String(count).padStart(4, '0')}`;
+        const code = destination === 'entrepot' ? 'CAE' : 'CA';
+        return prochainNumero({ table: 'commandes_achat', prefixe: prefixeDuMois(code), id_utilisateur, db });
     }
 
     /* ============================================================
@@ -252,6 +234,7 @@ class CommandeAchat {
        ============================================================ */
     static async create(data) {
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
@@ -311,13 +294,15 @@ class CommandeAchat {
             );
 
             await connection.commit();
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
             return await this.findById(id_commande_achat, id_utilisateur);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 
@@ -653,6 +638,7 @@ class CommandeAchat {
         }
 
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
@@ -728,13 +714,15 @@ class CommandeAchat {
             }
 
             await connection.commit();
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
             return await this.findById(id, id_utilisateur);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 
@@ -747,6 +735,7 @@ class CommandeAchat {
         }
 
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
@@ -783,13 +772,15 @@ class CommandeAchat {
             );
 
             await connection.commit();
+            connection.release(); // rendue au pool AVANT la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
             return await this.findById(id_commande_achat, id_utilisateur);
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 
