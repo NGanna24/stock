@@ -2,6 +2,7 @@
 import { pool } from '../config/db.js';
 import { prochainNumero, prefixeDuMois, estDoublonNumero, attendreUnPeu } from '../utils/numerotation.js';
 import MouvementStock from './MouvementStock.js';
+import Client from './Client.js';
 
 class CommandeVente {
     /**
@@ -159,6 +160,13 @@ class CommandeVente {
             // ============================================================
             // Numéro = plus grand du mois + 1. Si deux ventes sont validées au même instant,
             // la seconde reçoit « doublon » : on reprend simplement le numéro suivant.
+            // Fiche client : retrouvée (ou créée) d'après le client choisi ou le téléphone saisi
+            const fiche = await Client.rattacherVente(connection, id_utilisateur, {
+                id_client: data.id_client || null, nomclient, telephone,
+            });
+            const nomVente = nomclient || fiche?.nom || null;
+            const telVente = telephone || fiche?.telephone || null;
+
             let numero_commande;
             let result;
             for (let essai = 1; ; essai++) {
@@ -167,14 +175,15 @@ class CommandeVente {
                     [result] = await connection.execute(
                         `INSERT INTO commandes_vente (
                             id_utilisateur, numero_commande, date_commande,
-                            nomclient, telephone, statut, montant_total, notes
-                        ) VALUES (?, ?, ?, ?, ?, 'en_attente', 0.00, ?)`,
+                            nomclient, telephone, id_client, statut, montant_total, notes
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'en_attente', 0.00, ?)`,
                         [
                             id_utilisateur,
                             numero_commande,
                             date_commande,
-                            nomclient,
-                            telephone,
+                            nomVente,
+                            telVente,
+                            fiche?.id_client || null,
                             notes || null
                         ]
                     );
@@ -641,6 +650,7 @@ await connection.execute(
         }
 
         const connection = await pool.getConnection();
+        let connexionRendue = false;
         try {
             await connection.beginTransaction();
 
@@ -743,6 +753,8 @@ await connection.execute(
             );
 
             await connection.commit();
+            connection.release(); // rendue au pool avant la relecture (sinon blocage quand le pool est plein)
+            connexionRendue = true;
 
             // Récupérer le paiement inséré (via pool, plus sûr)
             const [paiement] = await pool.execute(
@@ -757,10 +769,10 @@ await connection.execute(
             return paiement[0];
 
         } catch (error) {
-            await connection.rollback();
+            if (!connexionRendue) await connection.rollback();
             throw error;
         } finally {
-            connection.release();
+            if (!connexionRendue) connection.release();
         }
     }
 
@@ -923,31 +935,59 @@ await connection.execute(
             throw new Error('id_utilisateur requis pour delete');
         }
 
+        const [rows] = await pool.execute(
+            `SELECT cv.statut, cv.numero_commande,
+                    (SELECT COALESCE(SUM(p.montant), 0) FROM paiements p
+                      JOIN factures_vente f ON f.id_facture = p.id_facture
+                      WHERE f.id_commande = cv.id_commande AND p.id_utilisateur = cv.id_utilisateur) AS paye,
+                    (SELECT COUNT(*) FROM retours_clients rc WHERE rc.id_commande_vente = cv.id_commande) AS nb_retours
+             FROM commandes_vente cv
+             WHERE cv.id_commande = ? AND cv.id_utilisateur = ?`,
+            [id, id_utilisateur]
+        );
+
+        if (rows.length === 0) {
+            throw new Error('Commande non trouvée');
+        }
+        const c = rows[0];
+        if (c.statut !== 'en_attente' && c.statut !== 'annulee') {
+            throw new Error(`Impossible de supprimer une commande ${c.statut}`);
+        }
+        // Une vente déjà encaissée ne se supprime pas : l'argent reçu disparaîtrait des recettes
+        // et de la caisse. Il faut l'annuler (le stock revient) puis rembourser si besoin.
+        if (parseFloat(c.paye) > 0.009) {
+            throw new Error(`La vente ${c.numero_commande} a déjà été encaissée : annulez-la au lieu de la supprimer`);
+        }
+        if (parseInt(c.nb_retours, 10) > 0) {
+            throw new Error(`La vente ${c.numero_commande} a des retours clients : elle ne peut pas être supprimée`);
+        }
+
+        // Remettre le stock (comme une annulation), puis supprimer la facture et la vente.
+        // Avant : la vente disparaissait mais le stock vendu n'était jamais rendu,
+        // et la facture restait (sans vente) avec ses paiements.
+        if (c.statut === 'en_attente') {
+            await this.annuler(id, id_utilisateur);
+        }
+
+        const connection = await pool.getConnection();
         try {
-            const [rows] = await pool.execute(
-                `SELECT statut FROM commandes_vente
-                 WHERE id_commande = ? AND id_utilisateur = ?`,
+            await connection.beginTransaction();
+            await connection.execute(
+                'DELETE FROM factures_vente WHERE id_commande = ? AND id_utilisateur = ?',
                 [id, id_utilisateur]
             );
-
-            if (rows.length === 0) {
-                throw new Error('Commande non trouvée');
-            }
-            if (rows[0].statut !== 'en_attente') {
-                throw new Error(`Impossible de supprimer une commande ${rows[0].statut}`);
-            }
-
-            const [result] = await pool.execute(
-                `DELETE FROM commandes_vente
-                 WHERE id_commande = ? AND id_utilisateur = ?`,
+            const [result] = await connection.execute(
+                'DELETE FROM commandes_vente WHERE id_commande = ? AND id_utilisateur = ?',
                 [id, id_utilisateur]
             );
-
+            await connection.commit();
             return result.affectedRows > 0;
-
         } catch (error) {
+            await connection.rollback();
             console.error('❌ Error deleting commande:', error);
             throw error;
+        } finally {
+            connection.release();
         }
     }
 

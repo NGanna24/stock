@@ -1,5 +1,6 @@
 import { createPool } from "mysql2/promise";
 import creation_tables from "./codesql.js";
+import { executerMigrations, rattacherVentesAuxClients } from "./migrations.js";
 import dotenv from 'dotenv';
 dotenv.config();  
 // Configuration améliorée avec des variables d'environnement
@@ -25,6 +26,12 @@ const initDataBase = async () => {
         // Exécuter le script SQL de création des tables
         await connection.query(creation_tables.creation_tables);
         // console.log("Tables créées avec succès");
+
+        // Ajouts de colonnes manquantes (sans perte de données)
+        await executerMigrations(pool);
+
+        // En arrière-plan : fiches clients reconstituées depuis les ventes existantes
+        rattacherVentesAuxClients(pool).catch((e) => console.error('⚠️ [Clients] rattachement des ventes :', e.message));
 
     } catch (error) {
         console.error("Erreur lors de l'initialisation de la base de données:", error);

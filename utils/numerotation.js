@@ -18,6 +18,7 @@ const AUTORISES = {
     retours_clients: 'numero_retour',
     retours_fournisseurs: 'numero_retour',
     inventaires: 'reference',
+    clients: 'code_client',
 };
 
 /** Préfixe du mois en cours : « CV-202611- » */
@@ -43,7 +44,7 @@ export async function prochainNumero({ table, prefixe, id_utilisateur, db = pool
 
 /** Vrai si l'erreur MySQL est un doublon de numéro (deux enregistrements au même instant). */
 export const estDoublonNumero = (err) =>
-    err?.code === 'ER_DUP_ENTRY' && /unique_numero_par_user|unique_ref_par_user/.test(String(err.sqlMessage || err.message));
+    err?.code === 'ER_DUP_ENTRY' && /unique_numero_par_user|unique_ref_par_user|uniq_code_client/.test(String(err.sqlMessage || err.message));
 
 /** Petite pause aléatoire avant de retenter (évite que deux ventes se recroisent encore). */
 export const attendreUnPeu = () => new Promise((r) => setTimeout(r, 10 + Math.floor(Math.random() * 60)));

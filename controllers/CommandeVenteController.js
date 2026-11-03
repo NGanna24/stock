@@ -13,6 +13,7 @@ class CommandeVenteController {
             const {
                 nomclient = null,
                 telephone = null,
+                id_client = null,
                 date_commande,
                 notes,
                 mode_paiement, 
@@ -107,6 +108,7 @@ class CommandeVenteController {
             const commande = await CommandeVente.create({
                 nomclient: nomclient || null,
                 telephone: telephone || null,
+                id_client: parseInt(id_client, 10) || null,
                 date_commande,
                 notes: notes || null,
                 id_utilisateur: req.workspaceId,

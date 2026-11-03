@@ -115,6 +115,9 @@ app.use(cors({
 // Journal d'activité : enregistre automatiquement les actions réussies (avant toutes les routes)
 app.use('/api', journalActivite);
 
+// Test de connexion (mode hors ligne) : réponse minuscule, sans authentification
+app.get('/api/ping', (req, res) => res.set('Cache-Control', 'no-store').json({ ok: true }));
+
 app.use('/api/utilisateur', UtilisateurRoutes);
 app.use('/api/categories', categorieRoutes);
 app.use('/api/modeles', ModeleRoutes);

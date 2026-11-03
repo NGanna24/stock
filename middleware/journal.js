@@ -203,6 +203,7 @@ export function decrire(methode, chemin) {
     let libelle;
     if (dernier === 'profile') libelle = verbe;
     else if (segments[0] === 'hors-ligne' && methode === 'POST') return { module, action: 'creation', libelle: 'a envoyé des ventes faites hors ligne', segments };
+    else if (segments[0] === 'clients' && dernier === 'fusionner') return { module, action: 'modification', libelle: 'a fusionné deux fiches client', segments };
     else if (segments[0] === 'relances' && methode === 'POST') return { module, action: 'relance', libelle: 'a relancé le client', segments };
     else if (segments[0] === 'caisse' && (dernier === 'ouvrir' || dernier === 'cloturer')) libelle = `${verbe} la caisse`;
     else libelle = `${verbe} ${objet}`;

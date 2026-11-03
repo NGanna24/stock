@@ -1,256 +1,117 @@
 // controllers/RecetteController.js
 import Recette from '../models/Recette.js';
 
+const sendError = (res, error, fallback) => {
+    if (!error.statusCode) console.error('❌', error);
+    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
+    return res.status(500).json({
+        success: false,
+        message: fallback,
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+};
+
+const filtresDe = (q) => ({
+    dateDebut: q.dateDebut || undefined,
+    dateFin: q.dateFin || undefined,
+    modePaiement: q.modePaiement || undefined,
+    type: q.type || undefined,          // 'encaissements' | 'remboursements'
+    search: q.search || undefined,
+});
+
 class RecetteController {
-    /**
-     * ============================================================
-     * LISTE DE TOUTES LES RECETTES
-     * ============================================================
-     */
+    /* GET /api/recettes?dateDebut&dateFin&modePaiement&type&search
+       → { recettes, stats, par_jour, par_mode, top_clients } (chiffres = même filtre que la liste) */
     static async getAllRecettes(req, res) {
         try {
-            const filters = {
-                dateDebut: req.query.dateDebut,
-                dateFin: req.query.dateFin,
-                modePaiement: req.query.modePaiement,
-                search: req.query.search
-            };
-
-            const [
-                recettes,
-                stats,
-                parJour,
-                parMode,
-                topClients
-            ] = await Promise.all([
-                Recette.findAll(req.workspaceId, filters),
-                Recette.getStats(req.workspaceId, filters),
-                Recette.getRecettesParJour(req.workspaceId, filters),
-                Recette.getRecettesParMode(req.workspaceId, filters),
-                Recette.getTopClients(req.workspaceId, filters, 10)
-            ]);
-
-            res.status(200).json({
-                success: true,
-                count: recettes.length,
-                data: {
-                    recettes,
-                    stats,
-                    par_jour: parJour,
-                    par_mode: parMode,
-                    top_clients: topClients
-                }
-            });
+            const filtres = filtresDe(req.query);
+            const recettes = await Recette.findAll(req.workspaceId, filtres);
+            const resume = Recette.resumer(recettes, filtres);
+            res.status(200).json({ success: true, count: recettes.length, data: { recettes, ...resume } });
         } catch (error) {
-            console.error('❌ Erreur getAllRecettes:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des recettes',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
-            });
+            sendError(res, error, 'Erreur lors de la récupération des recettes');
         }
     }
 
-    /**
-     * ============================================================
-     * CRÉER UNE RECETTE
-     * ============================================================
-     */
+    /* POST /api/recettes { id_facture, montant, date_paiement, mode_paiement, reference?, note? } */
     static async createRecette(req, res) {
         try {
-            const data = req.body;
-
-            // Validations
-            if (!data.id_facture) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'La facture est obligatoire'
-                });
-            }
-
-            if (!data.montant || data.montant <= 0) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Le montant doit être supérieur à 0'
-                });
-            }
-
-            if (!data.date_paiement) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'La date de paiement est obligatoire'
-                });
-            }
-
-            const id = await Recette.create(data, req.workspaceId);
-
-            // Récupérer la recette créée
-            const recettes = await Recette.findAll(req.workspaceId, {});
-            const newRecette = recettes.find(r => r.id_paiement === id);
-
+            const id = await Recette.create(req.body || {}, req.workspaceId);
             res.status(201).json({
                 success: true,
-                message: 'Recette créée avec succès',
-                data: newRecette
+                message: 'Recette enregistrée',
+                data: await Recette.findById(id, req.workspaceId),
             });
         } catch (error) {
-            console.error('❌ Erreur createRecette:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la création de la recette',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
-            });
+            sendError(res, error, "Erreur lors de l'enregistrement de la recette");
         }
     }
 
-    /**
-     * ============================================================
-     * SUPPRIMER UNE RECETTE
-     * ============================================================
-     */
+    /* DELETE /api/recettes/:id (admin, manager) */
     static async deleteRecette(req, res) {
         try {
-            const { id } = req.params;
-
-            const exists = await Recette.exists(id, req.workspaceId);
-            if (!exists) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Recette non trouvée'
-                });
-            }
-
-            const deleted = await Recette.delete(id, req.workspaceId);
-
-            if (deleted) {
-                res.status(200).json({
-                    success: true,
-                    message: 'Recette supprimée avec succès'
-                });
-            } else {
-                res.status(400).json({
-                    success: false,
-                    message: 'Erreur lors de la suppression'
-                });
-            }
+            await Recette.delete(parseInt(req.params.id, 10) || 0, req.workspaceId);
+            res.status(200).json({ success: true, message: 'Recette supprimée, facture mise à jour' });
         } catch (error) {
-            console.error('❌ Erreur deleteRecette:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la suppression de la recette',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
-            });
+            sendError(res, error, 'Erreur lors de la suppression de la recette');
         }
     }
 
-    /**
-     * ============================================================
-     * STATISTIQUES DES RECETTES
-     * ============================================================
-     */
+    /* GET /api/recettes/stats */
     static async getStats(req, res) {
         try {
-            const filters = {
-                dateDebut: req.query.dateDebut,
-                dateFin: req.query.dateFin
-            };
-
-            const stats = await Recette.getStats(req.workspaceId, filters);
-
-            res.status(200).json({
-                success: true,
-                data: stats
-            });
+            res.status(200).json({ success: true, data: await Recette.getStats(req.workspaceId, filtresDe(req.query)) });
         } catch (error) {
-            console.error('❌ Erreur getStats recettes:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des statistiques',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
-            });
+            sendError(res, error, 'Erreur lors de la récupération des statistiques');
         }
     }
 
-    /**
-     * ============================================================
-     * FACTURES IMPAYÉES (pour créer une recette)
-     * ============================================================
-     */
+    /* GET /api/recettes/factures-impayees */
     static async getFacturesImpayees(req, res) {
         try {
             const factures = await Recette.getFacturesImpayees(req.workspaceId);
-
-            res.status(200).json({
-                success: true,
-                count: factures.length,
-                data: factures
-            });
+            res.status(200).json({ success: true, count: factures.length, data: factures });
         } catch (error) {
-            console.error('❌ Erreur getFacturesImpayees:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur lors de la récupération des factures impayées',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
-            });
+            sendError(res, error, 'Erreur lors de la récupération des factures impayées');
         }
     }
 
-    /**
-     * ============================================================
-     * EXPORT CSV DES RECETTES
-     * ============================================================
-     */
+    /* GET /api/recettes/export (mêmes filtres que la liste) → CSV lisible par Excel (point-virgule, accents) */
     static async exportRecettes(req, res) {
         try {
-            const filters = {
-                dateDebut: req.query.dateDebut,
-                dateFin: req.query.dateFin
-            };
-
-            const recettes = await Recette.findAll(req.workspaceId, filters);
-            const stats = await Recette.getStats(req.workspaceId, filters);
-
-            const headers = [
-                'Date', 'N° Facture', 'N° Commande', 'Client',
-                'Téléphone', 'Montant', 'Mode paiement', 'Référence', 'Note'
+            const filtres = filtresDe(req.query);
+            const recettes = await Recette.findAll(req.workspaceId, filtres);
+            const { stats } = Recette.resumer(recettes, filtres);
+            const MODES = { especes: 'Espèces', carte: 'Carte', virement: 'Virement', cheque: 'Chèque', autre: 'Autre' };
+            const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+            const fr = (d) => (d ? d.split('-').reverse().join('/') : '');
+            const lignes = [
+                [`Recettes du ${fr(filtres.dateDebut) || 'début'} au ${fr(filtres.dateFin) || "aujourd'hui"}`],
+                [],
+                ['Encaissé', stats.total_encaisse],
+                ['Remboursé', stats.total_rembourse],
+                ['Net', stats.net],
+                [],
+                ['Date', 'Type', 'N° facture', 'N° vente', 'Client', 'Téléphone', 'Montant', 'Mode', 'Référence', 'Note'],
+                ...recettes.map((r) => [
+                    fr(r.date_paiement),
+                    r.type === 'remboursement' ? 'Remboursement' : 'Encaissement',
+                    r.numero_facture || '',
+                    r.numero_commande || (r.vente_supprimee ? 'vente supprimée' : ''),
+                    r.nomclient || '',
+                    r.telephone || '',
+                    r.montant,
+                    MODES[r.mode_paiement] || r.mode_paiement,
+                    r.reference || '',
+                    r.note || '',
+                ]),
             ];
-
-            const rows = recettes.map(r => [
-                r.date_formatee || r.date_paiement,
-                r.numero_facture || '',
-                r.numero_commande || '',
-                r.nomclient || '',
-                r.telephone || '',
-                r.montant,
-                r.mode_paiement,
-                r.reference || '',
-                r.note || ''
-            ]);
-
-            const csvContent = [
-                `"Rapport des recettes du ${filters.dateDebut || 'début'} au ${filters.dateFin || 'aujourd\'hui'}"`,
-                '',
-                `"Nombre de paiements: ${stats.nombre_paiements}"`,
-                `"Total recettes: ${stats.total_recettes} FCFA"`,
-                `"Moyenne paiement: ${stats.moyenne_paiement.toFixed(2)} FCFA"`,
-                '',
-                headers.join(','),
-                ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
-            ].join('\n');
-
-            res.setHeader('Content-Type', 'text/csv;charset=utf-8');
-            res.setHeader(
-                'Content-Disposition',
-                `attachment; filename=recettes_${new Date().toISOString().split('T')[0]}.csv`
-            );
-            res.status(200).send(csvContent);
+            const csv = '﻿' + lignes.map((l) => l.map(cell).join(';')).join('\r\n');
+            res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename=recettes_${filtres.dateDebut || ''}_${filtres.dateFin || ''}.csv`);
+            res.status(200).send(csv);
         } catch (error) {
-            console.error('❌ Erreur exportRecettes:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Erreur lors de l\'exportation',
-                error: process.env.NODE_ENV === 'development' ? error.message : undefined
-            });
+            sendError(res, error, "Erreur lors de l'exportation");
         }
     }
 }
