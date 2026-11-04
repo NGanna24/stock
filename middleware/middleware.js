@@ -32,9 +32,10 @@ export const authenticateToken = (req, res, next) => {
 
         jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key', async (err, decoded) => {
             if (err) {
-                return res.status(403).json({
+                return res.status(401).json({
                     success: false,
-                    message: 'Token invalide ou expiré'
+                    code: 'SESSION_EXPIREE',
+                    message: 'Session expirée : reconnectez-vous'
                 });
             }
 
@@ -80,6 +81,16 @@ export const authenticateToken = (req, res, next) => {
                     id_workspace = user.id_utilisateur;
                     role = user.role_nom;
                     id_magasin = req.headers['x-magasin-id'] || req.query.id_magasin || null;
+                }
+
+                // Session fermée depuis (mot de passe changé, « déconnecter tous les appareils »,
+                // trop de codes incorrects) : le jeton n'est plus accepté
+                if ((Number(decoded.sv) || 0) !== (Number(user.session_version) || 1)) {
+                    return res.status(401).json({
+                        success: false,
+                        code: 'SESSION_EXPIREE',
+                        message: 'Session fermée : reconnectez-vous'
+                    });
                 }
 
                 // Vérification du statut actif

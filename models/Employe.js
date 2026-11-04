@@ -222,7 +222,8 @@ static async update(id, id_utilisateur, data) {
     // ✅ AJOUT : gestion du mot de passe
     if (data.password) {
         const hashedPassword = await bcrypt.hash(data.password, 10);
-        updates.push('password = ?');
+        // Nouveau code : les sessions ouvertes avec l'ancien sont fermées, le blocage est levé
+        updates.push('password = ?', 'session_version = session_version + 1', 'tentatives_echouees = 0', 'bloque_jusqua = NULL');
         values.push(hashedPassword);
     }
 
@@ -247,7 +248,7 @@ static async update(id, id_utilisateur, data) {
     static async updatePassword(id, newPassword) {
         const hashed = await bcrypt.hash(newPassword, 10);
         const [result] = await pool.execute(
-            'UPDATE employes SET password = ? WHERE id_employe = ?',
+            'UPDATE employes SET password = ?, session_version = session_version + 1, tentatives_echouees = 0, bloque_jusqua = NULL WHERE id_employe = ?',
             [hashed, id]
         );
         return result.affectedRows > 0;

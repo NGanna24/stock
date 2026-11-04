@@ -382,7 +382,7 @@ static async findByEmail(email) {
             const hashedPassword = await bcrypt.hash(newPassword, 10);
             
             const [result] = await pool.execute(
-                'UPDATE utilisateurs SET password = ? WHERE id_utilisateur = ?',
+                'UPDATE utilisateurs SET password = ?, session_version = session_version + 1, tentatives_echouees = 0, bloque_jusqua = NULL WHERE id_utilisateur = ?',
                 [hashedPassword, userId]
             );
 

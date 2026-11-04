@@ -7,19 +7,18 @@ import Employe from '../models/Employe.js';
 import PasswordReset from '../models/PasswordReset.js';
 import { sendResetCode } from '../Services/emailService.js';
 import Entrepot from '../models/Entrepot.js';
+import {
+    signerJeton, minutesDeBlocage, noterEchec, effacerEchecs, versionSession, revoquerSessions, MAX_ESSAIS, BLOCAGE_MINUTES,
+} from '../utils/securite.js';
 
-const JWT_EXPIRES_IN = '30d';
 const DEFAULT_COUNTRY = 'CI'; // Pays par défaut pour parser les numéros locaux
 
 // ============================================================
 // FONCTION UTILITAIRE : Générer le token JWT
 // ============================================================
 function generateToken(userId, telephone, role) {
-    return jwt.sign(
-        { id: userId, telephone, role },
-        process.env.JWT_SECRET || 'your-secret-key',
-        { expiresIn: JWT_EXPIRES_IN }
-    );
+    // Nouveau compte : version de session 1 (valeur par défaut de la colonne)
+    return signerJeton({ id: userId, telephone, role, type: 'utilisateur', sv: 1 });
 }
 
 // ============================================================
@@ -253,7 +252,6 @@ class UtilisateurController {
                 telephoneLength: telephone?.length,
                 passwordLength: password?.length,
                 passwordType: typeof password,
-                passwordPreview: password ? '***' + password.slice(-2) : '(vide)',
             });
             // =========================================================
 
@@ -351,6 +349,17 @@ class UtilisateurController {
             // VÉRIFICATION MOT DE PASSE
             // ============================================================
             console.log('🔎 [LOGIN] Étape 6 → Vérification mot de passe (' + type + ')...');
+            // Compte bloqué après trop de mauvais codes ?
+            const idCompte = type === 'utilisateur' ? user.id_utilisateur : user.id_employe;
+            const blocage = await minutesDeBlocage(type, idCompte);
+            if (blocage > 0) {
+                return res.status(429).json({
+                    success: false,
+                    code: 'COMPTE_BLOQUE',
+                    message: `Trop de codes incorrects : compte bloqué encore ${blocage} minute${blocage > 1 ? 's' : ''}.`
+                });
+            }
+
             let isValidPassword = false;
 
             if (type === 'utilisateur') {
@@ -370,27 +379,32 @@ class UtilisateurController {
                 console.log('   → type      :', type);
                 console.log('   → id        :', type === 'utilisateur' ? user.id_utilisateur : user.id_employe);
                 console.log('═══════════════════════════════════════════════════');
+                const echec = await noterEchec(type, idCompte);
+                if (echec.bloque) {
+                    return res.status(429).json({
+                        success: false,
+                        code: 'COMPTE_BLOQUE',
+                        message: `${MAX_ESSAIS} codes incorrects : compte bloqué ${BLOCAGE_MINUTES} minutes.`
+                    });
+                }
                 return res.status(401).json({
                     success: false,
-                    message: 'Identifiants invalides'
+                    message: echec.restants <= 2
+                        ? `Identifiants invalides (encore ${echec.restants} essai${echec.restants > 1 ? 's' : ''} avant blocage)`
+                        : 'Identifiants invalides'
                 });
             }
+            await effacerEchecs(type, idCompte);
 
             // ============================================================
             // GÉNÉRATION DU TOKEN
             // ============================================================
             console.log('🔎 [LOGIN] Étape 7 → Génération du token JWT...');
             const id = type === 'utilisateur' ? user.id_utilisateur : user.id_employe;
-            const token = jwt.sign(
-                {
-                    id,
-                    telephone: user.telephone,
-                    role: user.role_nom,
-                    type
-                },
-                process.env.JWT_SECRET || 'your-secret-key',
-                { expiresIn: JWT_EXPIRES_IN }
-            );
+            const token = signerJeton({
+                id, telephone: user.telephone, role: user.role_nom, type,
+                sv: await versionSession(type, id),
+            });
             console.log('   ✅ Token généré');
 
             // ============================================================
@@ -465,6 +479,76 @@ return res.status(200).json({
                 message: 'Erreur lors de la connexion'
             });
         }
+    }
+
+    /** POST /api/utilisateur/renouveler : nouveau jeton de 12 h (appelé tant que l'on travaille) */
+    static async renouveler(req, res) {
+        try {
+            const type = req.user.type === 'employe' ? 'employe' : 'utilisateur';
+            const id = type === 'employe' ? req.user.id_employe : req.user.id;
+            const token = signerJeton({ id, telephone: req.user.telephone, role: req.user.role, type, sv: await versionSession(type, id) });
+            return res.json({ success: true, token });
+        } catch (error) {
+            console.error('❌ Renouveler session :', error);
+            return res.status(500).json({ success: false, message: 'Erreur lors du renouvellement de la session' });
+        }
+    }
+
+    /**
+     * POST /api/utilisateur/verifier-code { password } : déverrouiller l'écran après inactivité.
+     * Mêmes règles que la connexion : 5 mauvais codes → compte bloqué et toutes les sessions fermées.
+     */
+    static async verifierCode(req, res) {
+        try {
+            const type = req.user.type === 'employe' ? 'employe' : 'utilisateur';
+            const id = type === 'employe' ? req.user.id_employe : req.user.id;
+            const { password } = req.body || {};
+            if (!password) return res.status(400).json({ success: false, message: 'Saisissez votre code' });
+
+            const blocage = await minutesDeBlocage(type, id);
+            if (blocage > 0) {
+                return res.status(429).json({ success: false, code: 'COMPTE_BLOQUE', message: `Compte bloqué encore ${blocage} minute${blocage > 1 ? 's' : ''}.` });
+            }
+            const ok = type === 'utilisateur'
+                ? await Utilisateur.verifyPassword(id, String(password))
+                : await Employe.verifyPassword(id, String(password));
+            if (!ok) {
+                const echec = await noterEchec(type, id);
+                if (echec.bloque) {
+                    await revoquerSessions(type, id);
+                    return res.status(429).json({ success: false, code: 'COMPTE_BLOQUE', message: `${MAX_ESSAIS} codes incorrects : compte bloqué ${BLOCAGE_MINUTES} minutes.` });
+                }
+                return res.status(400).json({ success: false, code: 'CODE_INCORRECT', restants: echec.restants, message: `Code incorrect (encore ${echec.restants} essai${echec.restants > 1 ? 's' : ''})` });
+            }
+            await effacerEchecs(type, id);
+            const token = signerJeton({ id, telephone: req.user.telephone, role: req.user.role, type, sv: await versionSession(type, id) });
+            return res.json({ success: true, token });
+        } catch (error) {
+            console.error('❌ Vérifier code :', error);
+            return res.status(500).json({ success: false, message: 'Erreur lors de la vérification du code' });
+        }
+    }
+
+    /**
+     * POST /api/utilisateur/deconnecter-partout : ferme toutes les sessions ouvertes (autres appareils
+     * compris) et renvoie un nouveau jeton pour rester connecté sur cet appareil.
+     */
+    static async deconnecterPartout(req, res) {
+        try {
+            const type = req.user.type === 'employe' ? 'employe' : 'utilisateur';
+            const id = type === 'employe' ? req.user.id_employe : req.user.id;
+            const sv = await revoquerSessions(type, id);
+            const token = signerJeton({ id, telephone: req.user.telephone, role: req.user.role, type, sv });
+            return res.json({ success: true, message: 'Tous les autres appareils ont été déconnectés', token });
+        } catch (error) {
+            console.error('❌ Déconnecter partout :', error);
+            return res.status(500).json({ success: false, message: 'Erreur lors de la déconnexion des appareils' });
+        }
+    }
+
+    /** POST /api/utilisateur/logout : rien à faire côté serveur (le jeton est effacé sur l'appareil). */
+    static async logout(req, res) {
+        return res.json({ success: true, message: 'Déconnecté' });
     }
 
     /**

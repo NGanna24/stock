@@ -46,6 +46,13 @@ const COLONNES = [
     ['clients', 'fusionne_dans', 'INT NULL'],
     ['clients', 'date_modification', 'DATETIME NULL ON UPDATE CURRENT_TIMESTAMP'],
     ['clients', 'code_client', 'VARCHAR(20) NULL'],
+    // ---------- Sécurité de la connexion ----------
+    ['utilisateurs', 'tentatives_echouees', 'INT NOT NULL DEFAULT 0'],
+    ['utilisateurs', 'bloque_jusqua', 'DATETIME NULL'],
+    ['utilisateurs', 'session_version', 'INT NOT NULL DEFAULT 1'],
+    ['employes', 'tentatives_echouees', 'INT NOT NULL DEFAULT 0'],
+    ['employes', 'bloque_jusqua', 'DATETIME NULL'],
+    ['employes', 'session_version', 'INT NOT NULL DEFAULT 1'],
     // ---------- Vente rattachée à une fiche client ----------
     ['commandes_vente', 'id_client', 'INT NULL'],
 ];
