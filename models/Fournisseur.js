@@ -768,6 +768,27 @@ static async getProduitsRecus(id_fournisseur, id_utilisateur) {
             ]
         );
 
+        // Unités de vente de chaque produit (Carton ×12…) pour saisir le retour
+        // en cartons + pièces côté écran
+        const unitesParProduit = {};
+        const ids = rows.map(r => r.id_produit).filter(Boolean);
+        if (ids.length) {
+            const [uvs] = await pool.query(
+                `SELECT id_unite_vente, id_produit, nom, quantite_base
+                 FROM unites_vente
+                 WHERE id_produit IN (?) AND actif = TRUE
+                 ORDER BY quantite_base DESC`,
+                [ids]
+            );
+            for (const u of uvs) {
+                (unitesParProduit[u.id_produit] ||= []).push({
+                    id_unite_vente: u.id_unite_vente,
+                    nom: u.nom,
+                    quantite_base: parseFloat(u.quantite_base) || 1,
+                });
+            }
+        }
+
         // Enrichissement : calculer la quantité max retournable
         return rows.map(r => {
             const recue = parseFloat(r.quantite_recue) || 0;
@@ -791,6 +812,7 @@ static async getProduitsRecus(id_fournisseur, id_utilisateur) {
                 quantite_max_retournable: Math.floor(maxRetournable),
 
                 prix_achat: parseFloat(r.prix_achat) || 0,
+                unites_vente: unitesParProduit[r.id_produit] || [],
 
                 id_reception_recente: r.id_reception_recente,
                 derniere_reception: r.derniere_reception,
@@ -805,4 +827,4 @@ static async getProduitsRecus(id_fournisseur, id_utilisateur) {
 }
 }
 
-export default Fournisseur; 
+export default Fournisseur; 

@@ -22,7 +22,7 @@ class GptService {
    * @param {string} filePath - Chemin absolu vers le fichier audio
    * @param {string} language - Code langue ISO (ex: 'fr')
    */
-  async transcribe(filePath, language = 'fr') {
+  async transcribe(filePath, language = 'fr', vocabulaire = '') {
     if (!fs.existsSync(filePath)) {
       throw new Error('Fichier audio introuvable');
     }
@@ -33,7 +33,10 @@ class GptService {
         model: 'whisper-large-v3',
         language: language,
         response_format: 'verbose_json',
-        temperature: 0.2,
+        temperature: 0,
+        // Noms de produits, marques et clients du magasin : Whisper les écrit
+        // correctement au lieu d'un mot qui sonne pareil
+        ...(vocabulaire ? { prompt: vocabulaire.slice(0, 700) } : {}),
       });
 
       return {
@@ -65,4 +68,4 @@ class GptService {
   }
 }
 
-export default new GptService();
+export default new GptService();

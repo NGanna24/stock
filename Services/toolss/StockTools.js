@@ -1,6 +1,7 @@
 // Services/toolss/StockTools.js
 import { pool } from '../../config/db.js';
-import Produit from '../../models/Produit.js';
+import { preparer_vente } from './ActionsVente.js';
+import { chercherProduits } from './Recherche.js';
 
 // ============================================================
 // UTILITAIRE : sécurité numérique
@@ -156,7 +157,7 @@ export async function rechercher_produit({ nom }, workspaceId) {
     return { error: 'Nom de produit requis' };
   }
 
-  const produits = await Produit.search(nom.trim(), workspaceId);
+  const produits = await chercherProduits(nom.trim(), workspaceId);
 
   if (!produits || produits.length === 0) {
     return { found: false, message: `Aucun produit trouvé pour "${nom}"` };
@@ -246,12 +247,17 @@ export async function lister_produits({ limite = 30 }, workspaceId) {
 export async function details_produit({ nom }, workspaceId) {
   if (!nom) return { error: 'Nom du produit requis' };
 
-  const produits = await Produit.search(nom.trim(), workspaceId);
+  const produits = await chercherProduits(nom.trim(), workspaceId);
   if (!produits || produits.length === 0) {
     return { found: false, message: `Aucun produit trouvé pour "${nom}"` };
   }
 
   const p = produits[0];
+  // Autres produits presque aussi proches : l'IA peut demander lequel
+  const autresProches = produits
+    .slice(1, 4)
+    .filter((x) => (x._score || 0) >= (p._score || 0) - 0.05)
+    .map((x) => x.nom);
   const stockBase = safeNumber(p.quantite_stock);
   const uniteBase = p.unite_symbole || p.unite_nom || 'unité';
 
@@ -289,6 +295,7 @@ export async function details_produit({ nom }, workspaceId) {
 
   return {
     found: true,
+    autres_produits_proches: autresProches.length ? autresProches : undefined,
     produit: {
       nom: p.nom,
       description: p.description || null,
@@ -1391,7 +1398,7 @@ export async function ventes_produit_periode(
     date_debut ||
     new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  const produits = await Produit.search(nom_produit.trim(), workspaceId);
+  const produits = await chercherProduits(nom_produit.trim(), workspaceId);
   if (!produits || produits.length === 0) {
     return { found: false, message: `Aucun produit trouvé pour "${nom_produit}"` };
   }
@@ -1596,6 +1603,9 @@ export const toolExecutors = {
   rapport_ventes_complet,
   rapport_stocks_complet,
 
+  // Actions (brouillon à confirmer dans l'application)
+  preparer_vente,
+
   // No-op
   aucune_action,
-};
+};

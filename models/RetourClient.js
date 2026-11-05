@@ -160,11 +160,16 @@ class RetourClient {
             // 3. VALIDER CHAQUE LIGNE DE RETOUR
             // ============================================================
             const lignesValidees = [];
+            // Déjà demandé dans CE retour, par ligne vendue (plusieurs lignes du même produit)
+            const demandeParLigne = {};
 
             for (const ligneRetour of lignes) {
-                const ligneOrigine = lignesCommande.find(
-                    l => l.id_produit === ligneRetour.id_produit
-                );
+                // Une vente peut contenir le même produit sur plusieurs lignes
+                // (2 cartons + 5 pièces) : on vise la ligne exacte quand elle est donnée,
+                // sinon (ancien écran) la première ligne de ce produit.
+                const idLigne = parseInt(ligneRetour.id_ligne_vente, 10) || null;
+                const ligneOrigine = (idLigne && lignesCommande.find(l => l.id_ligne_vente === idLigne))
+                    || lignesCommande.find(l => l.id_produit === ligneRetour.id_produit);
 
                 if (!ligneOrigine) {
                     throw new Error(
@@ -183,7 +188,8 @@ class RetourClient {
                     );
                 }
 
-                const dejaRetourne = parseFloat(ligneOrigine.quantite_retournee_base) || 0;
+                const dejaRetourne = (parseFloat(ligneOrigine.quantite_retournee_base) || 0)
+                    + (demandeParLigne[ligneOrigine.id_ligne_vente] || 0);
                 const retournable = parseFloat(ligneOrigine.quantite_totale_base) - dejaRetourne;
 
                 if (qteRetourBase > retournable) {
@@ -199,6 +205,9 @@ class RetourClient {
                     parseFloat(ligneOrigine.quantite_base || 1);
 
                 const montantRembourse = qteRetourBase * prixUnitaireReel;
+
+                demandeParLigne[ligneOrigine.id_ligne_vente] =
+                    (demandeParLigne[ligneOrigine.id_ligne_vente] || 0) + qteRetourBase;
 
                 lignesValidees.push({
                     id_produit: ligneOrigine.id_produit,
@@ -303,7 +312,11 @@ class RetourClient {
                     );
 
                     // 7d. Enregistrer l'entrée de stock
-                    const refEntree = `ENTREE-RETOUR-${numero_retour}-${ligne.id_produit}`;
+                    // Une référence par ligne vendue : le même produit peut revenir sur 2 lignes
+                    // (cartons + pièces) dans un seul retour
+                    const refEntree = lignesValidees.filter(x => x.id_produit === ligne.id_produit).length > 1
+                        ? `ENTREE-RETOUR-${numero_retour}-${ligne.id_produit}-${ligne.id_ligne_vente}`
+                        : `ENTREE-RETOUR-${numero_retour}-${ligne.id_produit}`;
                     await connection.execute(
                         `INSERT INTO entrees_stock (
                             id_utilisateur, reference, date_entree, id_produit,
@@ -639,4 +652,4 @@ class RetourClient {
     }
 }
 
-export default RetourClient;
+export default RetourClient;

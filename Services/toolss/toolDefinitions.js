@@ -631,4 +631,48 @@ export const toolDefinitions = [
       },
     },
   },
+
+  // ============================================================
+  // ACTION : préparer une vente (rien n'est enregistré sans confirmation)
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'preparer_vente',
+      description:
+        "Prépare une VENTE quand l'utilisateur veut vendre ou enregistrer une vente (ex: 'vends 2 cartons d'huile à Awa', 'mets 3 bougies pour Koffi, il a payé', 'enregistre une vente de 5 filtres'). " +
+        "La vente n'est PAS enregistrée : l'application affiche un récapitulatif que le vendeur doit confirmer. " +
+        "Mets une ligne par produit ET par unité : '2 cartons et 3 bidons d'huile' = 2 lignes (huile/carton/2 et huile/bidon/3).",
+      parameters: {
+        type: 'object',
+        properties: {
+          lignes: {
+            type: 'array',
+            description: 'Produits vendus',
+            items: {
+              type: 'object',
+              properties: {
+                produit: { type: 'string', description: "Nom du produit tel que dit (ex: 'huile 5L', 'bougie')" },
+                quantite: { type: 'number', description: 'Nombre vendu dans cette unité' },
+                unite: { type: 'string', description: "Unité dite (ex: 'carton', 'bidon', 'pièce'). Vide si non précisée." },
+                prix_unitaire: { type: 'number', description: "Prix par unité SEULEMENT si l'utilisateur le donne" },
+              },
+              required: ['produit', 'quantite'],
+            },
+          },
+          client: { type: 'string', description: 'Nom du client si donné' },
+          telephone: { type: 'string', description: 'Téléphone du client si donné' },
+          paiement: {
+            type: 'object',
+            description: "Seulement si l'utilisateur dit que le client a payé",
+            properties: {
+              mode: { type: 'string', enum: ['especes', 'carte', 'virement', 'cheque'] },
+              montant: { type: 'number', description: 'Montant payé si différent du total' },
+            },
+          },
+        },
+        required: ['lignes'],
+      },
+    },
+  },
 ];

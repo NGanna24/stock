@@ -1,6 +1,7 @@
 // controllers/GptController.js
 import GptService from '../Services/GptService.js';
 import GptChatService from '../Services/GptChatService.js';
+import { vocabulaireMagasin } from '../Services/toolss/Recherche.js';
 
 class GptController {
   static async transcribe(req, res) {
@@ -16,7 +17,13 @@ class GptController {
       const language = (req.body?.language || 'fr').slice(0, 5);
       console.log(`🎤 [GptController] Transcription : ${req.file.originalname}`);
 
-      const result = await GptService.transcribe(filePath, language);
+      let vocabulaire = '';
+      try {
+        vocabulaire = await vocabulaireMagasin(req.workspaceId);
+      } catch {
+        // sans vocabulaire, la dictée marche quand même
+      }
+      const result = await GptService.transcribe(filePath, language, vocabulaire);
       GptService.deleteFile(filePath);
 
       if (!result.text || result.text.trim() === '') {
@@ -63,7 +70,7 @@ class GptController {
                 typeof h.content === 'string' &&
                 (h.role === 'user' || h.role === 'assistant')
             )
-            .slice(-10)
+            .slice(-8)
         : [];
 
       console.log(
@@ -85,6 +92,10 @@ class GptController {
       return res.status(200).json({
         success: true,
         reply: result.reply,
+        // Brouillon à confirmer dans l'application (vente préparée par la voix)
+        action: result.action || null,
+        // Données trouvées, rejouées par l'application dans l'historique
+        memo: result.memo || null,
       });
     } catch (error) {
       console.error('❌ Erreur chat:', error);
@@ -96,4 +107,4 @@ class GptController {
   }
 }
 
-export default GptController;
+export default GptController;
