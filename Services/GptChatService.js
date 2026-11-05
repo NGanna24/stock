@@ -108,7 +108,13 @@ class GptChatService {
     // IA utilisée : Gemini (gratuit) dès que GEMINI_API_KEY est présent.
     // Pour revenir à Groq : IA_FOURNISSEUR=groq dans le .env
     this.fournisseur = (process.env.IA_FOURNISSEUR || (Gemini.disponible() ? 'gemini' : 'groq')).toLowerCase();
-    console.log(`[GptChatService] IA : ${this.fournisseur === 'gemini' ? `Gemini (${Gemini.modeleActif})` : `Groq (${this.model})`}`);
+    // Si tous les modèles gratuits de Google sont épuisés, Groq (gratuit aussi) prend le relais.
+    // Pour l'interdire : IA_SECOURS=non dans le .env
+    this.groqSecours = Boolean(process.env.GROQ_API_KEY) && (process.env.IA_SECOURS || '').toLowerCase() !== 'non';
+    console.log(
+      `[GptChatService] IA : ${this.fournisseur === 'gemini' ? `Gemini (${Gemini.modeleActif})` : `Groq (${this.model})`}` +
+        (this.fournisseur === 'gemini' && this.groqSecours ? ', Groq en secours' : '')
+    );
     this.MAX_ITERATIONS = 5;
     // Le modèle réfléchit avant de répondre : 800 jetons ne suffisaient pas
     this.MAX_TOKENS = 2500;
@@ -219,18 +225,32 @@ Bonjour, merci, au revoir : réponds en une phrase, sans outil. Hors sujet : ram
     const memo = [];
     let action = null;
 
-    const appeler = () =>
-      this.fournisseur === 'gemini'
-        ? Gemini.discuter({ messages, tools: outils, max_tokens: this.MAX_TOKENS })
-        : this.groq.chat.completions.create({
+    const appelGroq = () =>
+      this.groq.chat.completions.create({
         model: this.model,
-        messages,
+        // champs propres à Gemini retirés : Groq les refuse
+        messages: messages.map(({ _gemini_parts, _gemini_modele, reasoning, ...m }) =>
+          m.tool_calls ? { ...m, tool_calls: m.tool_calls.map(({ _gemini_id, ...t }) => t) } : m
+        ),
         tools: outils,
         tool_choice: 'auto',
         temperature: 0.3,
         max_tokens: this.MAX_TOKENS,
         reasoning_effort: 'low',
       });
+
+    const appeler = async () => {
+      if (this.fournisseur !== 'gemini') return appelGroq();
+      try {
+        return await Gemini.discuter({ messages, tools: outils, max_tokens: this.MAX_TOKENS });
+      } catch (e) {
+        if ([429, 503].includes(e.status) && this.groqSecours) {
+          console.warn('[GptChatService] limite Google atteinte : Groq prend le relais');
+          return appelGroq();
+        }
+        throw e;
+      }
+    };
 
     try {
       let response = await appeler();

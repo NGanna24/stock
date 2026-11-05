@@ -14,8 +14,42 @@ dotenv.config();
 
 const API = process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta';
 
-// Si un modèle n'existe plus (Google en retire régulièrement), on essaie le suivant
-const MODELES_SECOURS = ['gemini-3.5-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
+// ============================================================
+// QUOTAS GRATUITS : chaque modèle a SA propre limite (par minute et par jour).
+// Une question = 3 à 4 appels ; avec un seul modèle, la limite tombe vite.
+// On passe donc au modèle suivant quand l'un est épuisé, et on le
+// reprend quand Google le permet de nouveau.
+// Liste réglable dans .env : GEMINI_MODELES=gemini-3.5-flash,gemini-3.6-flash,...
+// ============================================================
+const MODELES_DISCUSSION = [
+  'gemini-3.5-flash',
+  'gemini-3.6-flash',
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-2.5-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash-lite',
+  'gemini-flash-latest',
+];
+// Pour écrire ce qui a été dit, un modèle « lite » suffit : on garde les
+// gros modèles pour réfléchir
+const MODELES_ECOUTE = [
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash-lite',
+  'gemini-flash-lite-latest',
+  'gemini-2.5-flash',
+  'gemini-3.5-flash',
+];
+
+// Signature acceptée par Gemini 3 quand l'historique vient d'un autre modèle
+const SIGNATURE_NEUTRE = 'skip_thought_signature_validator';
+
+const liste = (env, defaut) => {
+  const v = (process.env[env] || '').split(',').map((x) => x.trim()).filter(Boolean);
+  return v.length ? v : defaut;
+};
 
 const MIME_AUDIO = {
   '.m4a': 'audio/mp4',
@@ -41,8 +75,11 @@ class GeminiClient {
   constructor() {
     this.cle = process.env.GEMINI_API_KEY || '';
     const choisi = (process.env.GEMINI_MODEL || '').trim();
-    this.modeles = [...new Set([choisi, ...MODELES_SECOURS].filter(Boolean))];
+    this.modeles = [...new Set([choisi, ...liste('GEMINI_MODELES', MODELES_DISCUSSION)].filter(Boolean))];
+    this.modelesEcoute = [...new Set(liste('GEMINI_MODELES_ECOUTE', MODELES_ECOUTE))];
     this.modeleActif = this.modeles[0];
+    // modèle → moment (ms) avant lequel on ne le réessaie pas
+    this.repos = new Map();
     if (!this.cle) console.warn('[Gemini] GEMINI_API_KEY manquant dans .env');
   }
 
@@ -51,20 +88,32 @@ class GeminiClient {
   }
 
   // ------------------------------------------------------------
-  // Appel brut, avec bascule de modèle si Google répond 404
+  // Appel brut : on essaie les modèles dans l'ordre, en sautant ceux
+  // qui sont au repos (limite atteinte, retiré par Google…)
   // ------------------------------------------------------------
-  async generer(corps, { modele } = {}) {
+  async generer(corps, { ordre } = {}) {
     if (!this.cle) throw new ErreurGemini("Clé Gemini absente : ajoute GEMINI_API_KEY dans le fichier .env du serveur.", 401);
 
-    const essais = modele ? [modele] : [this.modeleActif, ...this.modeles.filter((m) => m !== this.modeleActif)];
-    let derniere;
+    const tous = ordre || this.modeles;
+    const maintenant = Date.now();
+    const essais = tous.filter((m) => !(this.repos.get(m) > maintenant));
+    let derniere = null;
+    let surcharge = false;
+    let limite = false;
+
     for (const m of essais) {
-      const rep = await fetch(`${API}/models/${m}:generateContent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.cle },
-        body: JSON.stringify(corps(m)),
-      });
-      const texte = await rep.text();
+      let rep;
+      let texte = '';
+      try {
+        rep = await fetch(`${API}/models/${m}:generateContent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.cle },
+          body: JSON.stringify(corps(m)),
+        });
+        texte = await rep.text();
+      } catch (e) {
+        throw new ErreurGemini('Pas de connexion vers Google. Réessaie.', 503);
+      }
       let json = {};
       try {
         json = JSON.parse(texte);
@@ -72,24 +121,53 @@ class GeminiClient {
         json = {};
       }
       if (rep.ok) {
-        if (m !== this.modeleActif) {
-          console.warn(`[Gemini] modèle ${this.modeleActif} indisponible, on utilise ${m}`);
-          this.modeleActif = m;
-        }
-        return json;
+        if (ordre === undefined) this.modeleActif = m;
+        return { json, modele: m };
       }
+
       const msg = json?.error?.message || texte.slice(0, 300) || `HTTP ${rep.status}`;
       derniere = new ErreurGemini(msg, rep.status);
-      // 404 = modèle inconnu → on essaie le suivant ; le reste est une vraie erreur
-      if (rep.status !== 404) break;
+
+      if (rep.status === 400 && /api key/i.test(msg)) {
+        throw new ErreurGemini('La clé Gemini est invalide. Vérifie GEMINI_API_KEY dans le .env du serveur.', 400);
+      }
+
+      let pause;
+      if (rep.status === 429) {
+        // Google dit combien attendre (« retryDelay »), et si la limite est par jour
+        const details = JSON.stringify(json?.error?.details || []);
+        const attente = Number((details.match(/"retryDelay":"(\d+(?:\.\d+)?)s"/) || [])[1] || 0);
+        const parJour = /PerDay|per_day|RequestsPerDay/i.test(details + msg);
+        pause = parJour ? 60 * 60 * 1000 : Math.max(attente * 1000, 20 * 1000);
+        limite = true;
+        console.warn(`[Gemini] limite atteinte sur ${m} (${parJour ? 'du jour' : 'de la minute'}), modèle suivant`);
+      } else if (rep.status === 404) {
+        pause = 24 * 60 * 60 * 1000; // modèle inconnu pour cette clé
+        console.warn(`[Gemini] modèle ${m} indisponible, modèle suivant`);
+      } else if (rep.status >= 500) {
+        pause = 60 * 1000; // Google surchargé
+        surcharge = true;
+        console.warn(`[Gemini] ${m} surchargé (${rep.status}), modèle suivant`);
+      } else {
+        pause = 60 * 60 * 1000; // requête refusée par ce modèle (réglage non pris en charge…)
+        console.warn(`[Gemini] ${m} refuse la requête : ${msg.slice(0, 200)}`);
+      }
+      this.repos.set(m, Date.now() + pause);
     }
-    if (derniere?.status === 429) {
-      throw new ErreurGemini("Miyo a atteint la limite gratuite de Google pour le moment. Réessaie dans une minute.", 429);
+
+    // Plus aucun modèle disponible
+    const reprise = Math.min(...tous.map((m) => this.repos.get(m) || Infinity));
+    const minutes = Number.isFinite(reprise) ? Math.max(1, Math.ceil((reprise - Date.now()) / 60000)) : null;
+    if (limite || essais.length === 0) {
+      throw new ErreurGemini(
+        `Miyo a atteint la limite gratuite de Google.${minutes ? ` Réessaie dans ${minutes > 59 ? 'environ une heure' : `${minutes} minute${minutes > 1 ? 's' : ''}`}.` : ''}`,
+        429
+      );
     }
-    if (derniere?.status === 400 && /api key/i.test(derniere.message)) {
-      throw new ErreurGemini('La clé Gemini est invalide. Vérifie GEMINI_API_KEY dans le .env du serveur.', 400);
-    }
-    throw derniere || new ErreurGemini('Gemini ne répond pas', 500);
+    if (surcharge) throw new ErreurGemini('Google est surchargé en ce moment. Réessaie dans une minute.', 503);
+    // aucun modèle de la liste n'est accessible avec cette clé
+    console.error('[Gemini] aucun modèle utilisable :', derniere?.message);
+    throw new ErreurGemini("Miyo n'arrive pas à joindre l'IA de Google. Vérifie GEMINI_MODELES dans le .env.", 500);
   }
 
   // Réglages de réflexion : courts pour répondre vite à la voix
@@ -107,7 +185,7 @@ class GeminiClient {
   // ------------------------------------------------------------
   // Conversion : messages façon OpenAI → contenus Gemini
   // ------------------------------------------------------------
-  static versGemini(messages) {
+  static versGemini(messages, modele = '') {
     let systeme = '';
     const contenus = [];
     // id d'appel → nom de l'outil (le message « tool » ne porte que l'id)
@@ -129,13 +207,30 @@ class GeminiClient {
           appels.set(t.id, { name: t.function?.name, gid: t._gemini_id });
         }
         if (Array.isArray(m._gemini_parts) && m._gemini_parts.length) {
-          // On renvoie la réponse telle quelle (avec la « signature de pensée » exigée par Gemini 3)
-          pousser('model', m._gemini_parts);
+          // On renvoie la réponse telle quelle (avec la « signature de pensée » exigée par Gemini 3).
+          // Si on a changé de modèle entre-temps, sa signature ne vaut plus : signature neutre.
+          const memeModele = m._gemini_modele === modele;
+          pousser(
+            'model',
+            m._gemini_parts
+              .filter((p) => !p.thought)
+              .map((p) =>
+                memeModele
+                  ? p
+                  : p.functionCall
+                  ? { functionCall: p.functionCall, thoughtSignature: SIGNATURE_NEUTRE }
+                  : (() => {
+                      const { thoughtSignature, ...reste } = p;
+                      return reste;
+                    })()
+              )
+          );
         } else if (m.tool_calls?.length) {
           pousser(
             'model',
             m.tool_calls.map((t) => ({
               functionCall: { name: t.function.name, args: JSON.parse(t.function.arguments || '{}') },
+              thoughtSignature: SIGNATURE_NEUTRE,
             }))
           );
         } else if (m.content) {
@@ -176,15 +271,20 @@ class GeminiClient {
   // Discussion avec outils, réponse au format OpenAI
   // ------------------------------------------------------------
   async discuter({ messages, tools, max_tokens = 2500 }) {
-    const { systeme, contenus } = GeminiClient.versGemini(messages);
     const outils = GeminiClient.outils(tools);
+    // On garde le même modèle pendant toute une question tant qu'il répond
+    const precedent = [...messages].reverse().find((m) => m._gemini_modele)?._gemini_modele;
+    const ordre = precedent ? [precedent, ...this.modeles.filter((m) => m !== precedent)] : undefined;
 
-    const json = await this.generer((modele) => ({
+    const { json, modele: utilise } = await this.generer((modele) => {
+      const { systeme, contenus } = GeminiClient.versGemini(messages, modele);
+      return {
       ...(systeme ? { systemInstruction: { parts: [{ text: systeme }] } } : {}),
       contents: contenus,
       ...(outils ? { tools: outils, toolConfig: { functionCallingConfig: { mode: 'AUTO' } } } : {}),
       generationConfig: GeminiClient.reglages(modele, max_tokens),
-    }));
+      };
+    }, { ordre });
 
     const candidat = json?.candidates?.[0];
     const parts = candidat?.content?.parts || [];
@@ -216,6 +316,7 @@ class GeminiClient {
             ...(tool_calls.length ? { tool_calls } : {}),
             // pour renvoyer la réponse intacte au tour suivant
             _gemini_parts: parts,
+            _gemini_modele: utilise,
           },
           finish_reason: candidat.finishReason,
         },
@@ -238,13 +339,13 @@ class GeminiClient {
 Accents ivoiriens et bruit de boutique possibles : choisis les mots qui ont du sens dans ce commerce.
 ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients) : ${vocabulaire.slice(0, 1500)}\n` : ''}N'ajoute rien, ne réponds pas à la question, ne traduis pas. Si on n'entend aucune parole, réponds exactement : [silence]`;
 
-    const json = await this.generer((modele) => ({
+    const { json } = await this.generer((modele) => ({
       contents: [{ role: 'user', parts: [{ inlineData: { mimeType: mime, data } }, { text: consigne }] }],
       generationConfig: {
         ...GeminiClient.reglages(modele, 1024),
         ...(/gemini-2\.5/.test(modele) ? { thinkingConfig: { thinkingBudget: 0 }, temperature: 0 } : {}),
       },
-    }));
+    }), { ordre: this.modelesEcoute });
 
     const texte = (json?.candidates?.[0]?.content?.parts || [])
       .filter((p) => typeof p.text === 'string' && !p.thought)

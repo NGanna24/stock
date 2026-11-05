@@ -11,6 +11,7 @@ dotenv.config();
 class GptService {
   constructor() {
     this.fournisseur = (process.env.IA_FOURNISSEUR || (Gemini.disponible() ? 'gemini' : 'groq')).toLowerCase();
+    this.groqSecours = Boolean(process.env.GROQ_API_KEY) && (process.env.IA_SECOURS || '').toLowerCase() !== 'non';
     this.groq = new Groq({
       apiKey: process.env.GROQ_API_KEY,
     });
@@ -30,8 +31,11 @@ class GptService {
       try {
         return await Gemini.transcrire(filePath, { vocabulaire, mimetype });
       } catch (error) {
-        console.error('[GptService] Erreur transcription Gemini:', error.message);
-        throw new Error(error.message || 'Erreur lors de la transcription');
+        if (!([429, 503].includes(error.status) && this.groqSecours)) {
+          console.error('[GptService] Erreur transcription Gemini:', error.message);
+          throw new Error(error.message || 'Erreur lors de la transcription');
+        }
+        console.warn('[GptService] limite Google atteinte : Whisper (Groq) prend le relais');
       }
     }
 

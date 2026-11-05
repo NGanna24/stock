@@ -60,6 +60,22 @@ try {
       ? `OK  Gemini appelle bien l'outil : ${appel.function.name}(${appel.function.arguments})`
       : `??  pas d'outil appelé, réponse : ${r.choices[0].message.content}`
   );
+
+  // 3. Chaque modèle de la rotation (chacun a sa propre limite gratuite)
+  console.log('\nModèles que Miyo peut utiliser à tour de rôle :');
+  const vus = new Set();
+  for (const [role, liste] of [['réponses', Gemini.modeles], ['écoute', Gemini.modelesEcoute]]) {
+    for (const m of liste) {
+      if (vus.has(m)) continue;
+      vus.add(m);
+      try {
+        await Gemini.generer(() => ({ contents: [{ role: 'user', parts: [{ text: 'Réponds juste : OK' }] }] }), { ordre: [m] });
+        console.log(`    OK   ${m}`);
+      } catch (e) {
+        console.log(`    --   ${m} (${e.status === 429 ? 'limite atteinte pour le moment' : 'pas disponible avec ta clé'})`);
+      }
+    }
+  }
   console.log('\nTout est prêt : redémarre le serveur (pm2 restart) et parle à Miyo.');
 } catch (e) {
   console.log('NON :', e.message);
