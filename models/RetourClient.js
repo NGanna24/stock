@@ -520,13 +520,21 @@ class RetourClient {
             await connection.beginTransaction();
 
             const [rows] = await connection.execute(
-                `SELECT statut FROM retours_clients
-                 WHERE id_retour_client = ? AND id_utilisateur = ?`,
+                `SELECT rc.statut, rc.numero_retour, rc.id_facture, cv.statut AS statut_vente
+                 FROM retours_clients rc
+                 LEFT JOIN commandes_vente cv ON cv.id_commande = rc.id_commande_vente
+                 WHERE rc.id_retour_client = ? AND rc.id_utilisateur = ?
+                 FOR UPDATE`,
                 [id, id_utilisateur]
             );
 
             if (rows.length === 0) throw new Error('Retour non trouvé');
-            if (rows[0].statut === 'annule') throw new Error('Retour déjà annulé');
+            const retour = rows[0];
+            if (retour.statut === 'annule') throw new Error('Retour déjà annulé');
+            // La vente annulée a déjà remboursé le client en tenant compte de ce retour
+            if (retour.statut_vente === 'annulee') {
+                throw new Error('La vente de ce retour a été annulée : le retour ne peut plus être annulé');
+            }
 
             const [lignes] = await connection.execute(
                 `SELECT * FROM retour_client_lignes WHERE id_retour_client = ?`,
@@ -567,6 +575,16 @@ class RetourClient {
                 }
             }
 
+            // Le retour n'a finalement pas eu lieu : son remboursement ne compte plus
+            // dans les recettes ni dans la caisse
+            if (retour.id_facture) {
+                await connection.execute(
+                    `DELETE FROM paiements
+                     WHERE id_facture = ? AND id_utilisateur = ? AND reference = ? AND montant < 0`,
+                    [retour.id_facture, id_utilisateur, retour.numero_retour]
+                );
+            }
+
             await connection.execute(
                 `UPDATE retours_clients
                  SET statut = 'annule', date_traitement = NOW()
@@ -601,7 +619,8 @@ class RetourClient {
                 SUM(CASE WHEN statut = 'refuse' THEN 1 ELSE 0 END) AS refuse,
                 SUM(CASE WHEN statut = 'rembourse' THEN 1 ELSE 0 END) AS rembourse,
                 SUM(CASE WHEN statut = 'annule' THEN 1 ELSE 0 END) AS annule,
-                COALESCE(SUM(montant_total), 0) AS montant_total
+                -- les retours annulés n'ont rien remboursé au final
+                COALESCE(SUM(CASE WHEN statut <> 'annule' THEN montant_total ELSE 0 END), 0) AS montant_total
              FROM retours_clients
              WHERE id_utilisateur = ?`,
             [id_utilisateur]

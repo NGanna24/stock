@@ -49,10 +49,11 @@ class RapportAchat {
         }
 
         const [rows] = await pool.execute(
+            // Les commandes annulées sont comptées à part, pas dans les montants
             `SELECT
-                COUNT(*) AS nombre_commandes,
-                COALESCE(SUM(montant_total), 0) AS montant_total,
-                COALESCE(AVG(montant_total), 0) AS panier_moyen,
+                SUM(CASE WHEN statut <> 'annulee' THEN 1 ELSE 0 END) AS nombre_commandes,
+                COALESCE(SUM(CASE WHEN statut <> 'annulee' THEN montant_total ELSE 0 END), 0) AS montant_total,
+                COALESCE(AVG(CASE WHEN statut <> 'annulee' THEN montant_total END), 0) AS panier_moyen,
                 SUM(CASE WHEN statut = 'recue' THEN 1 ELSE 0 END) AS commandes_recues,
                 SUM(CASE WHEN statut = 'en_attente' THEN 1 ELSE 0 END) AS commandes_en_attente,
                 SUM(CASE WHEN statut = 'annulee' THEN 1 ELSE 0 END) AS commandes_annulees

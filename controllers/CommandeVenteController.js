@@ -1,6 +1,10 @@
 // controllers/CommandeVenteController.js
 import CommandeVente from '../models/CommandeVente.js';
+
 import Produit from '../models/Produit.js';
+
+// Annuler une vente déjà encaissée fait sortir de l'argent : réservé à ces rôles
+const PEUVENT_REMBOURSER = ['admin', 'manager'];
 
 class CommandeVenteController {
     /**
@@ -324,6 +328,13 @@ class CommandeVenteController {
                 });
             }
 
+            // Passer à « Annulée » = vraie annulation : stock remis, facture annulée,
+            // refusée si la vente est déjà encaissée. Avant, seul le libellé changeait
+            // et les articles vendus ne revenaient jamais en stock.
+            if (statut === 'annulee') {
+                return CommandeVenteController.annuler(req, res);
+            }
+
             const updated = await CommandeVente.updateStatut(id, statut, req.workspaceId);
 
             if (!updated) {
@@ -340,6 +351,9 @@ class CommandeVenteController {
             });
 
         } catch (error) {
+            if (error.status) {
+                return res.status(error.status).json({ success: false, code: error.code, message: error.message });
+            }
             console.error('❌ Update statut error:', error);
             return res.status(500).json({
                 success: false,
@@ -421,22 +435,24 @@ class CommandeVenteController {
         try {
             const { id } = req.params;
 
-            const annule = await CommandeVente.annuler(id, req.workspaceId);
-
-            if (!annule) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Impossible d\'annuler cette commande'
-                });
-            }
+            const { rembourse } = await CommandeVente.annuler(id, req.workspaceId, {
+                peutRembourser: PEUVENT_REMBOURSER.includes(req.user?.role)
+            });
+            const fcfa = (n) => `${Math.round(n).toLocaleString('fr-FR').replace(/\u202f|\u00a0/g, ' ')} FCFA`;
 
             return res.status(200).json({
                 success: true,
-                message: 'Commande annulée avec succès',
+                rembourse,
+                message: rembourse > 0
+                    ? `Vente annulée : articles remis en stock, ${fcfa(rembourse)} remboursés au client`
+                    : 'Vente annulée : les articles sont revenus en stock',
                 data: await CommandeVente.findById(id, req.workspaceId)
             });
 
         } catch (error) {
+            if (error.status) {
+                return res.status(error.status).json({ success: false, code: error.code, message: error.message });
+            }
             console.error('❌ Annuler commande error:', error);
             return res.status(500).json({
                 success: false,
@@ -469,6 +485,9 @@ class CommandeVenteController {
             });
 
         } catch (error) {
+            if (error.status) {
+                return res.status(error.status).json({ success: false, code: error.code, message: error.message });
+            }
             console.error('❌ Delete commande error:', error);
             return res.status(500).json({
                 success: false,

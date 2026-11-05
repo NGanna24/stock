@@ -48,10 +48,12 @@ class RapportVente {
         }
 
         const [rows] = await pool.execute(
+            // Les ventes annulées ne comptent ni dans le nombre, ni dans le chiffre
+            // d'affaires, ni dans le panier moyen (elles sont comptées à part)
             `SELECT
-                COUNT(*) AS nombre_commandes,
-                COALESCE(SUM(montant_total), 0) AS chiffre_affaires,
-                COALESCE(AVG(montant_total), 0) AS panier_moyen,
+                SUM(CASE WHEN statut <> 'annulee' THEN 1 ELSE 0 END) AS nombre_commandes,
+                COALESCE(SUM(CASE WHEN statut <> 'annulee' THEN montant_total ELSE 0 END), 0) AS chiffre_affaires,
+                COALESCE(AVG(CASE WHEN statut <> 'annulee' THEN montant_total END), 0) AS panier_moyen,
                 SUM(CASE WHEN statut = 'livree' THEN 1 ELSE 0 END) AS commandes_livrees,
                 SUM(CASE WHEN statut = 'en_attente' THEN 1 ELSE 0 END) AS commandes_en_attente,
                 SUM(CASE WHEN statut = 'annulee' THEN 1 ELSE 0 END) AS commandes_annulees

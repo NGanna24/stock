@@ -4,6 +4,10 @@ import { prochainNumero, prefixeDuMois, estDoublonNumero, attendreUnPeu } from '
 import MouvementStock from './MouvementStock.js';
 import Client from './Client.js';
 
+// Refus « normal » (règle de gestion) : le contrôleur renvoie ce statut HTTP et ce message tel quel.
+const erreurMetier = (message, status = 400, code = null) =>
+    Object.assign(new Error(message), { status, code });
+
 class CommandeVente {
     /**
      * ============================================================
@@ -826,7 +830,7 @@ await connection.execute(
      * ✅ Annuler une commande + réintégrer le stock (unités de base)
      * ============================================================
      */
-    static async annuler(id, id_utilisateur) {
+    static async annuler(id, id_utilisateur, { peutRembourser = true } = {}) {
         if (!id_utilisateur) {
             throw new Error('id_utilisateur requis pour annuler');
         }
@@ -835,26 +839,47 @@ await connection.execute(
         try {
             await connection.beginTransaction();
 
-            // Vérifier la commande
+            // Vérifier la commande (verrouillée : deux annulations simultanées
+            // remettraient le stock deux fois)
             const [rows] = await connection.execute(
-                `SELECT statut FROM commandes_vente
-                 WHERE id_commande = ? AND id_utilisateur = ?`,
+                `SELECT cv.statut, cv.numero_commande,
+                        (SELECT COALESCE(SUM(p.montant), 0) FROM paiements p
+                          JOIN factures_vente f ON f.id_facture = p.id_facture
+                          WHERE f.id_commande = cv.id_commande AND p.id_utilisateur = cv.id_utilisateur) AS paye,
+                        (SELECT COUNT(*) FROM retours_clients rc
+                          WHERE rc.id_commande_vente = cv.id_commande) AS nb_retours
+                 FROM commandes_vente cv
+                 WHERE cv.id_commande = ? AND cv.id_utilisateur = ?
+                 FOR UPDATE`,
                 [id, id_utilisateur]
             );
 
             if (rows.length === 0) {
-                throw new Error('Commande non trouvée');
+                throw erreurMetier('Commande non trouvée', 404);
             }
-            if (rows[0].statut === 'livree') {
-                throw new Error('Une commande livrée ne peut pas être annulée');
+            const c = rows[0];
+            if (c.statut === 'livree') {
+                throw erreurMetier('Une commande livrée ne peut pas être annulée : faites un retour client');
             }
-            if (rows[0].statut === 'annulee') {
-                throw new Error('Cette commande est déjà annulée');
+            if (c.statut === 'annulee') {
+                throw erreurMetier('Cette commande est déjà annulée');
+            }
+            // Vente déjà encaissée : l'annulation est permise, mais l'argent reçu est
+            // rendu par un remboursement enregistré (sinon la recette resterait comptée
+            // pour une vente qui n'existe plus). Réservé au patron et aux managers,
+            // car de l'argent sort de la caisse.
+            const paye = parseFloat(c.paye) || 0;
+            if (paye > 0.009 && !peutRembourser) {
+                throw erreurMetier(
+                    `La vente ${c.numero_commande} a déjà été encaissée : seuls le patron ou un manager peuvent l'annuler (le client sera remboursé)`,
+                    403, 'ANNULATION_RESERVEE'
+                );
             }
 
             // ✅ Récupérer les lignes avec quantite_totale_base
             const [lignes] = await connection.execute(
-                `SELECT id_produit, quantite, quantite_totale_base, id_unite_vente, nom_unite_vente
+                `SELECT id_produit, quantite, quantite_totale_base, quantite_retournee_base,
+                        id_unite_vente, nom_unite_vente
                  FROM ligne_commande_vente
                  WHERE id_commande = ?`,
                 [id]
@@ -862,9 +887,12 @@ await connection.execute(
 
             for (const ligne of lignes) {
                 // ✅ Réintégrer la quantité en UNITÉ DE BASE
-                const qteBase = parseFloat(ligne.quantite_totale_base)
+                const qteVendue = parseFloat(ligne.quantite_totale_base)
                     || parseFloat(ligne.quantite)
                     || 0;
+                // Les articles déjà rapportés par un retour client sont déjà revenus en stock
+                const qteBase = Math.max(0, qteVendue - (parseFloat(ligne.quantite_retournee_base) || 0));
+                if (qteBase <= 0) continue;
 
                 const [stockRows] = await connection.execute(
                     `SELECT quantite_stock FROM produits
@@ -900,6 +928,36 @@ await connection.execute(
                 }, connection, id_utilisateur);
             }
 
+            // Rembourser ce qui a été encaissé, mode par mode (espèces rendues en
+            // espèces, Mobile Money en Mobile Money…) : la caisse et les recettes
+            // retombent juste. Les remboursements des retours déjà faits sont déduits.
+            let rembourse = 0;
+            if (paye > 0.009) {
+                const [parMode] = await connection.execute(
+                    `SELECT p.mode_paiement, p.id_facture, SUM(p.montant) AS net
+                     FROM paiements p
+                     JOIN factures_vente f ON f.id_facture = p.id_facture
+                     WHERE f.id_commande = ? AND p.id_utilisateur = ?
+                     GROUP BY p.id_facture, p.mode_paiement
+                     HAVING SUM(p.montant) > 0.009`,
+                    [id, id_utilisateur]
+                );
+                for (const m of parMode) {
+                    const montant = Math.round(parseFloat(m.net) * 100) / 100;
+                    await connection.execute(
+                        `INSERT INTO paiements (
+                            id_utilisateur, id_facture, date_paiement,
+                            montant, mode_paiement, note, reference
+                        ) VALUES (?, ?, CURDATE(), ?, ?, ?, ?)`,
+                        [
+                            id_utilisateur, m.id_facture, -montant, m.mode_paiement || 'especes',
+                            `Remboursement annulation ${c.numero_commande}`, c.numero_commande
+                        ]
+                    );
+                    rembourse += montant;
+                }
+            }
+
             // Mettre à jour statut commande
             await connection.execute(
                 `UPDATE commandes_vente SET statut = 'annulee'
@@ -915,7 +973,7 @@ await connection.execute(
             );
 
             await connection.commit();
-            return true;
+            return { rembourse: Math.round(rembourse * 100) / 100 };
 
         } catch (error) {
             await connection.rollback();
@@ -951,15 +1009,15 @@ await connection.execute(
         }
         const c = rows[0];
         if (c.statut !== 'en_attente' && c.statut !== 'annulee') {
-            throw new Error(`Impossible de supprimer une commande ${c.statut}`);
+            throw erreurMetier(`Impossible de supprimer une commande ${c.statut}`);
         }
         // Une vente déjà encaissée ne se supprime pas : l'argent reçu disparaîtrait des recettes
         // et de la caisse. Il faut l'annuler (le stock revient) puis rembourser si besoin.
         if (parseFloat(c.paye) > 0.009) {
-            throw new Error(`La vente ${c.numero_commande} a déjà été encaissée : annulez-la au lieu de la supprimer`);
+            throw erreurMetier(`La vente ${c.numero_commande} a déjà été encaissée : elle ne peut pas être supprimée. Annulez-la : les articles reviennent en stock et le client est remboursé.`, 409, 'VENTE_ENCAISSEE');
         }
         if (parseInt(c.nb_retours, 10) > 0) {
-            throw new Error(`La vente ${c.numero_commande} a des retours clients : elle ne peut pas être supprimée`);
+            throw erreurMetier(`La vente ${c.numero_commande} a des retours clients : elle ne peut pas être supprimée`, 409, 'VENTE_AVEC_RETOURS');
         }
 
         // Remettre le stock (comme une annulation), puis supprimer la facture et la vente.
