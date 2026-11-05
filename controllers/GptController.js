@@ -23,7 +23,7 @@ class GptController {
       } catch {
         // sans vocabulaire, la dictée marche quand même
       }
-      const result = await GptService.transcribe(filePath, language, vocabulaire);
+      const result = await GptService.transcribe(filePath, language, vocabulaire, req.file.mimetype);
       GptService.deleteFile(filePath);
 
       if (!result.text || result.text.trim() === '') {

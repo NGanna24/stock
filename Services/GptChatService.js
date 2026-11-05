@@ -1,6 +1,6 @@
 // Services/GptChatService.js
 // ============================================================
-// ASSISTANT MIYO : conversation avec l'IA (Groq) + outils maison
+// ASSISTANT MIYO : conversation avec l'IA (Gemini, ou Groq) + outils maison
 // ------------------------------------------------------------
 // Ce qui a changé (novembre 2026) :
 //  - consignes réécrites : plus courtes, dates déjà calculées, texte venant
@@ -12,6 +12,7 @@
 //    rejoue dans l'historique : « et le prix ? » garde le bon produit
 // ============================================================
 import Groq from 'groq-sdk';
+import Gemini from './GeminiClient.js';
 import dotenv from 'dotenv';
 import { pool } from '../config/db.js';
 import { toolDefinitions } from './toolss/toolDefinitions.js';
@@ -102,11 +103,12 @@ const LIBELLE_ROLE = { admin: 'patron', manager: 'gestionnaire', caissier: 'cais
 
 class GptChatService {
   constructor() {
-    if (!process.env.GROQ_API_KEY) {
-      console.warn('[GptChatService] GROQ_API_KEY manquant');
-    }
     this.groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
     this.model = 'openai/gpt-oss-120b';
+    // IA utilisée : Gemini (gratuit) dès que GEMINI_API_KEY est présent.
+    // Pour revenir à Groq : IA_FOURNISSEUR=groq dans le .env
+    this.fournisseur = (process.env.IA_FOURNISSEUR || (Gemini.disponible() ? 'gemini' : 'groq')).toLowerCase();
+    console.log(`[GptChatService] IA : ${this.fournisseur === 'gemini' ? `Gemini (${Gemini.modeleActif})` : `Groq (${this.model})`}`);
     this.MAX_ITERATIONS = 5;
     // Le modèle réfléchit avant de répondre : 800 jetons ne suffisaient pas
     this.MAX_TOKENS = 2500;
@@ -218,7 +220,9 @@ Bonjour, merci, au revoir : réponds en une phrase, sans outil. Hors sujet : ram
     let action = null;
 
     const appeler = () =>
-      this.groq.chat.completions.create({
+      this.fournisseur === 'gemini'
+        ? Gemini.discuter({ messages, tools: outils, max_tokens: this.MAX_TOKENS })
+        : this.groq.chat.completions.create({
         model: this.model,
         messages,
         tools: outils,
@@ -275,7 +279,7 @@ Bonjour, merci, au revoir : réponds en une phrase, sans outil. Hors sujet : ram
 
           const contenu = JSON.stringify(toolResult);
           memo.push(`${toolName}(${JSON.stringify(toolArgs)}) → ${contenu.slice(0, 400)}`);
-          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: contenu.slice(0, 12000) });
+          messages.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: contenu.slice(0, 12000) });
         }
 
         response = await appeler();
