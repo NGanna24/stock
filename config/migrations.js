@@ -65,9 +65,30 @@ const INDEX = [
     ['clients', 'uniq_code_client', '(id_utilisateur, code_client)', 'UNIQUE'],
 ];
 
+// Abonnements des patrons (validés à la main par le super-admin).
+// Nouvelle table : aucune table existante n'est touchée.
+const TABLE_ABONNEMENTS = `
+CREATE TABLE IF NOT EXISTS abonnements (
+    id_abonnement INT AUTO_INCREMENT PRIMARY KEY,
+    id_utilisateur INT NOT NULL,
+    date_debut DATE NOT NULL,
+    date_fin DATE NOT NULL,
+    nb_mois INT NOT NULL DEFAULT 1,
+    montant DECIMAL(15, 2) NOT NULL DEFAULT 0,
+    moyen_paiement VARCHAR(30) NULL,
+    reference VARCHAR(100) NULL,
+    note VARCHAR(255) NULL,
+    id_super_admin INT NULL,
+    date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_abo_utilisateur (id_utilisateur, date_fin),
+    CONSTRAINT fk_abo_utilisateur FOREIGN KEY (id_utilisateur)
+        REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+)`;
+
 export async function executerMigrations(pool) {
     const conn = await pool.getConnection();
     try {
+        await conn.query(TABLE_ABONNEMENTS);
         for (const [table, colonne, definition] of COLONNES) {
             if (!(await colonneExiste(conn, table, colonne))) {
                 await conn.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${colonne}\` ${definition}`);

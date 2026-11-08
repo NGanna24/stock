@@ -61,7 +61,7 @@ const transporter = nodemailer.createTransport({
 // ============================================================
 // ENVOI D'EMAIL
 // ============================================================
-export async function sendEmail({ to, subject, html, text }) {
+export async function sendEmail({ to, subject, html, text, replyTo, expediteur }) {
     console.log('');
    
 
@@ -75,8 +75,9 @@ export async function sendEmail({ to, subject, html, text }) {
     try {
         console.log('📧 Envoi en cours...');
         const info = await transporter.sendMail({
-            from: `"Miyo Stock" <${EMAIL_USER}>`,
+            from: `"${expediteur || 'Miyo Stock'}" <${EMAIL_USER}>`,
             to,
+            replyTo,
             subject,
             text,
             html
@@ -164,4 +165,4 @@ export async function sendResetCode(email, code, fullname = '') {
     const text = `Miyo Stock - Votre code de réinitialisation est : ${code}\n\nValable 15 minutes.\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez cet email.`;
 
     return sendEmail({ to: email, subject, html, text });
-}
+}

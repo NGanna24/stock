@@ -59,6 +59,8 @@ import { authenticateSuperAdmin } from './middleware/superAdminAuth.js';
 import { requireRole, requireRoleForWrites } from './middleware/roleMiddleware.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import AbonnementRoutes from './routes/AbonnementRoutes.js';
+import AbonnementAdminRoutes from './routes/AbonnementAdminRoutes.js';
 
 // ==================== CONFIGURATION ENVIRONNEMENT ====================
 dotenv.config();
@@ -119,6 +121,7 @@ app.use('/api', journalActivite);
 app.get('/api/ping', (req, res) => res.set('Cache-Control', 'no-store').json({ ok: true }));
 
 app.use('/api/utilisateur', UtilisateurRoutes);
+app.use('/api/abonnement', AbonnementRoutes);
 app.use('/api/categories', categorieRoutes);
 app.use('/api/modeles', ModeleRoutes);
 app.use('/api/marques', marqueRoutes);
@@ -162,6 +165,7 @@ app.use('/api/gpt', gptRoutes);
 app.use('/api/admin', authenticateSuperAdmin, adminRoutes);
 app.use('/api/super-admin/magasins', authenticateSuperAdmin, MagasinAdminRoutes);
 app.use('/api/super-admin/utilisateurs', authenticateSuperAdmin, UtilisateurAdminRoutes);
+app.use('/api/super-admin/abonnements', authenticateSuperAdmin, AbonnementAdminRoutes);
 app.use('/api/super-admin/auth', SuperAdminAuthRoutes);
 app.use('/api', ProduitEntrepotRoutes); 
 app.use('/api', MouvementEntrepotRoutes);
@@ -201,4 +205,4 @@ const startServer = async () => {
 
 startServer();
 
-export default app;
+export default app;

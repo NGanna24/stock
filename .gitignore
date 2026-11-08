@@ -106,9 +106,11 @@ temp/
 # Ne pas suivre les fichiers uploadés par les utilisateurs
 uploads/magasins/
 uploads/magasins/*
+# Réglages des abonnements (numéros de paiement) modifiés depuis l'espace super-admin
+uploads/abonnement/
 !uploads/magasins/.gitkeep
 
 # ⚠️ Si tu as d'autres dossiers d'uploads à ignorer, ajoute-les :
 # uploads/produits/
 # uploads/clients/
-# uploads/factures/
+# uploads/factures/

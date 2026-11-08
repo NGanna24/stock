@@ -556,6 +556,15 @@ return res.status(200).json({
      */
     static async getProfile(req, res) {
         try {
+            // Un employé lit SA fiche (table employes), pas celle du patron
+            if (req.user.type === 'employe') {
+                const emp = await Employe.findById(req.user.id_employe);
+                if (!emp) {
+                    return res.status(404).json({ success: false, message: 'Employé non trouvé' });
+                }
+                return res.status(200).json({ success: true, user: UtilisateurController.profilEmploye(emp) });
+            }
+
             const userId = req.user.id;
             const user = await Utilisateur.findById(userId);
 
@@ -583,11 +592,13 @@ return res.status(200).json({
     success: true,
     user: {
         id: user.id_utilisateur,
+        type: 'utilisateur',
         slug: user.slug,
         fullname: user.fullname,
         telephone: user.telephone,
         email: user.email,
         role: user.role_nom,
+        id_magasin: null,
         actif: user.actif,
         date_creation: user.date_creation,
         derniere_connexion: user.derniere_connexion,
@@ -718,8 +729,90 @@ return res.status(200).json({
      * METTRE À JOUR le profil de l'utilisateur connecté
      * ⚠️ NE PEUT PAS changer son propre rôle
      */
+    /**
+     * Fiche « profil » d'un employé, au même format que la réponse de connexion
+     * (le slug reste celui du patron : il sert aux adresses des pages).
+     */
+    static profilEmploye(emp) {
+        return {
+            id: emp.id_employe,
+            type: 'employe',
+            slug: emp.slug_patron,
+            fullname: emp.fullname,
+            telephone: emp.telephone,
+            email: null,
+            role: emp.role_nom,
+            id_magasin: emp.id_magasin,
+            actif: emp.actif,
+            date_creation: emp.date_creation,
+            derniere_connexion: emp.derniere_connexion,
+            entrepots: [],
+            fonctionnalites: { entrepot: false, multi_magasins: false, transferts: false },
+        };
+    }
+
+    /**
+     * Un employé modifie SA fiche : nom et téléphone uniquement
+     * (pas d'email pour les employés ; rôle, magasin et code restent gérés par le patron).
+     */
+    static async updateProfileEmploye(req, res) {
+        const idEmploye = req.user.id_employe;
+        const idPatron = req.user.id_utilisateur;
+        const { fullname, telephone } = req.body;
+
+        const nom = typeof fullname === 'string' ? fullname.trim() : undefined;
+        if (fullname !== undefined && !nom) {
+            return res.status(400).json({ success: false, message: 'Le nom ne peut pas être vide' });
+        }
+
+        let cleanedTelephone;
+        if (telephone !== undefined && telephone !== null && telephone !== '') {
+            const telCheck = cleanAndValidateTelephone(telephone, DEFAULT_COUNTRY);
+            if (!telCheck.valid) {
+                return res.status(400).json({ success: false, message: telCheck.error });
+            }
+            cleanedTelephone = telCheck.cleaned;
+
+            const actuel = await Employe.findById(idEmploye);
+            if (actuel && actuel.telephone !== cleanedTelephone) {
+                // Le numéro sert à se connecter : il ne doit appartenir à personne d'autre
+                const patron = await Utilisateur.findOnly(cleanedTelephone);
+                const autreEmploye = await Employe.findByTelephone(cleanedTelephone);
+                if (patron || (autreEmploye && autreEmploye.id_employe !== idEmploye)) {
+                    return res.status(409).json({
+                        success: false,
+                        message: 'Ce numéro est déjà utilisé par un autre compte'
+                    });
+                }
+            } else {
+                cleanedTelephone = undefined; // inchangé
+            }
+        }
+
+        if (nom === undefined && cleanedTelephone === undefined) {
+            const emp = await Employe.findById(idEmploye);
+            return res.status(200).json({ success: true, message: 'Aucune modification', user: UtilisateurController.profilEmploye(emp) });
+        }
+
+        await Employe.update(idEmploye, idPatron, { fullname: nom, telephone: cleanedTelephone });
+        const emp = await Employe.findById(idEmploye);
+        if (!emp) {
+            return res.status(404).json({ success: false, message: 'Employé non trouvé' });
+        }
+        return res.status(200).json({
+            success: true,
+            message: 'Profil mis à jour avec succès',
+            user: UtilisateurController.profilEmploye(emp)
+        });
+    }
+
     static async updateProfile(req, res) {
         try {
+            // Un employé ne doit jamais modifier le compte du patron
+            if (req.user.type === 'employe') {
+                return await UtilisateurController.updateProfileEmploye(req, res);
+            }
+
             const userId = req.user.id;
             const { fullname, telephone, email } = req.body;
 
@@ -753,11 +846,13 @@ return res.status(200).json({
                 message: 'Profil mis à jour avec succès',
                 user: {
                     id: updatedUser.id_utilisateur,
+                    type: 'utilisateur',
                     slug: updatedUser.slug,
                     fullname: updatedUser.fullname,
                     telephone: updatedUser.telephone,
                     email: updatedUser.email,
                     role: updatedUser.role_nom,
+                    id_magasin: null,
                     actif: updatedUser.actif
                 }
             });
