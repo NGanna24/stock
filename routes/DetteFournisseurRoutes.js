@@ -10,6 +10,7 @@ const responsables = requireRole('admin', 'manager');
 router.get('/', responsables, DetteFournisseurController.liste);
 router.get('/fournisseurs/:id', responsables, DetteFournisseurController.detail);
 router.post('/paiements', responsables, DetteFournisseurController.payer);
+router.post('/paiements/:id/annuler', responsables, DetteFournisseurController.annuler);
 router.delete('/paiements/:id', requireRole('admin'), DetteFournisseurController.supprimer);
 
 export default router;

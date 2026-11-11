@@ -108,6 +108,8 @@ uploads/magasins/
 uploads/magasins/*
 # Réglages des abonnements (numéros de paiement) modifiés depuis l'espace super-admin
 uploads/abonnement/
+# Justificatifs des comptes fournisseurs (privés, jamais dans git)
+prive/
 !uploads/magasins/.gitkeep
 
 # ⚠️ Si tu as d'autres dossiers d'uploads à ignorer, ajoute-les :

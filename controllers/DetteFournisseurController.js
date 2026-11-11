@@ -65,13 +65,23 @@ class DetteFournisseurController {
         }
     }
 
-    /* DELETE /api/dettes-fournisseurs/paiements/:id   (admin) */
+    /* POST /api/dettes-fournisseurs/paiements/:id/annuler  { motif } — on n'efface jamais un versement */
+    static async annuler(req, res) {
+        try {
+            await DetteFournisseur.annulerPaiement(parseInt(req.params.id, 10) || 0, req.workspaceId, req.body?.motif, auteur(req));
+            res.json({ success: true, message: 'Versement annulé' });
+        } catch (error) {
+            sendError(res, error, "Erreur lors de l'annulation du paiement");
+        }
+    }
+
+    /* DELETE /api/dettes-fournisseurs/paiements/:id — anciennes versions : devient une annulation */
     static async supprimer(req, res) {
         try {
-            await DetteFournisseur.supprimerPaiement(parseInt(req.params.id, 10) || 0, req.workspaceId);
-            res.json({ success: true, message: 'Paiement supprimé' });
+            await DetteFournisseur.annulerPaiement(parseInt(req.params.id, 10) || 0, req.workspaceId, 'Supprimé depuis une ancienne version', auteur(req));
+            res.json({ success: true, message: 'Paiement annulé' });
         } catch (error) {
-            sendError(res, error, 'Erreur lors de la suppression du paiement');
+            sendError(res, error, "Erreur lors de l'annulation du paiement");
         }
     }
 }

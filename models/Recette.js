@@ -12,7 +12,8 @@
 //   - un remboursement se gère depuis son retour client, pas d'ici.
 import { pool } from '../config/db.js';
 
-const MODES = ['especes', 'carte', 'virement', 'cheque', 'autre'];
+import { CODES_MODES } from '../utils/modesPaiement.js';
+const MODES = CODES_MODES;
 const erreur = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const num = (v) => Math.round((parseFloat(v) || 0) * 100) / 100;
 const pad = (n) => String(n).padStart(2, '0');
@@ -94,6 +95,8 @@ class Recette {
 
         const parMode = {};
         MODES.forEach((m) => { parMode[m] = 0; });
+        // Un ancien mode inconnu compte quand même
+        enc.forEach((l) => { if (!(l.mode_paiement in parMode)) parMode[l.mode_paiement] = 0; });
         enc.forEach((l) => { parMode[l.mode_paiement] = num((parMode[l.mode_paiement] || 0) + l.montant); });
 
         // Par jour : tous les jours de la période (max 400), même sans recette
@@ -150,7 +153,7 @@ class Recette {
                 nombre_paiements: enc.length,
             },
             par_jour: parJour,
-            par_mode: MODES.map((m) => ({
+            par_mode: Object.keys(parMode).map((m) => ({
                 mode_paiement: m,
                 nombre: enc.filter((l) => l.mode_paiement === m).length,
                 total: parMode[m],

@@ -666,7 +666,7 @@ export const toolDefinitions = [
             type: 'object',
             description: "Seulement si l'utilisateur dit que le client a payé",
             properties: {
-              mode: { type: 'string', enum: ['especes', 'carte', 'virement', 'cheque'] },
+              mode: { type: 'string', enum: ['especes', 'wave', 'orange_money', 'mtn_momo', 'moov_money', 'carte', 'virement', 'cheque'] },
               montant: { type: 'number', description: 'Montant payé si différent du total' },
             },
           },

@@ -1,6 +1,35 @@
 // controllers/EmployeController.js
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import Employe from '../models/Employe.js';
 import Magasin from '../models/Magasin.js';
+import Utilisateur from '../models/Utilisateur.js';
+
+// ============================================================
+// Numéro d'un employé : même contrôle qu'à la connexion.
+// Sans ce contrôle, un numéro mal formé (ex. un numéro du Burkina
+// enregistré avec l'indicatif de la Côte d'Ivoire) était accepté
+// à la création, mais l'employé ne pouvait jamais se connecter.
+// ============================================================
+function verifierTelephoneEmploye(brut) {
+    const texte = String(brut || '').replace(/[\s\-().]/g, '');
+    if (!texte) return { ok: false, message: 'Numéro de téléphone requis' };
+    const avecPlus = texte.startsWith('00') ? `+${texte.slice(2)}` : texte;
+    const numero = parsePhoneNumberFromString(avecPlus.startsWith('+') ? avecPlus : `+${avecPlus}`);
+    if (!numero || !numero.isValid()) {
+        return {
+            ok: false,
+            message: "Ce numéro n'est pas valide pour le pays choisi. Vérifiez le pays (indicatif) puis le numéro, sans le 0 du début si le pays n'en utilise pas.",
+        };
+    }
+    return { ok: true, telephone: numero.number }; // forme +22670123456
+}
+
+// Un numéro sert à se connecter : il doit être unique dans tout Miyo
+async function numeroDejaPris(telephone, idEmployeExclu = null) {
+    if (await Utilisateur.findOnly(telephone)) return true;
+    const emp = await Employe.findByTelephone(telephone);
+    return !!emp && Number(emp.id_employe) !== Number(idEmployeExclu);
+}
 
 class EmployeController {
     /**
@@ -37,7 +66,11 @@ class EmployeController {
                 });
             }
 
-            const cleanedTelephone = telephone.replace(/\s/g, '');
+            const tel = verifierTelephoneEmploye(telephone);
+            if (!tel.ok) {
+                return res.status(400).json({ success: false, message: tel.message });
+            }
+            const cleanedTelephone = tel.telephone;
 
             // ✅ Vérifier que le rôle existe
             const roleId = await Employe.getRoleId(roleName);
@@ -57,6 +90,12 @@ class EmployeController {
                 return res.status(400).json({
                     success: false,
                     message: 'Un employé avec ce numéro existe déjà dans votre magasin'
+                });
+            }
+            if (await numeroDejaPris(cleanedTelephone)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Ce numéro est déjà utilisé par un autre compte Miyo'
                 });
             }
 
@@ -202,8 +241,19 @@ static async update(req, res) {
             });
         }
 
+        let telephoneNormalise;
         if (telephone) {
-            const cleanedTelephone = telephone.replace(/\s/g, '');
+            const tel = verifierTelephoneEmploye(telephone);
+            if (!tel.ok) {
+                return res.status(400).json({ success: false, message: tel.message });
+            }
+            const cleanedTelephone = telephoneNormalise = tel.telephone;
+            if (await numeroDejaPris(cleanedTelephone, id)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Ce numéro est déjà utilisé par un autre compte Miyo'
+                });
+            }
             const telExiste = await Employe.telephoneExists(
                 cleanedTelephone,
                 id_utilisateur,
@@ -219,7 +269,7 @@ static async update(req, res) {
 
         const updated = await Employe.update(id, id_utilisateur, {
             fullname,
-            telephone: telephone ? telephone.replace(/\s/g, '') : undefined,
+            telephone: telephoneNormalise,
             roleName,
             id_magasin,
             actif,
@@ -348,4 +398,4 @@ static async update(req, res) {
     }
 }
 
-export default EmployeController;
+export default EmployeController;

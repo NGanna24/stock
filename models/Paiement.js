@@ -437,7 +437,13 @@ class Paiement {
             );
 
             const stats = rows[0];
+            const [parModeRows] = await pool.execute(
+                `SELECT mode_paiement, COUNT(*) AS nombre, COALESCE(SUM(montant), 0) AS total
+                 FROM paiements WHERE id_utilisateur = ? GROUP BY mode_paiement ORDER BY total DESC`,
+                [id_utilisateur]
+            );
             return {
+                par_mode: parModeRows.map((r) => ({ mode_paiement: r.mode_paiement, nombre: Number(r.nombre), total: parseFloat(r.total) || 0 })),
                 total_paiements: parseInt(stats.total_paiements) || 0,
                 total_montant: parseFloat(stats.total_montant) || 0,
                 especes: parseFloat(stats.especes) || 0,
@@ -486,4 +492,4 @@ class Paiement {
     }
 }
 
-export default Paiement;
+export default Paiement;

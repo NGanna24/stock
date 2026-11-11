@@ -64,6 +64,7 @@ class ProduitEntrepot {
                     pe.emplacement,
                     pe.rayon,
                     pe.etagere,
+                    pe.id_emplacement,
                     pe.actif,
                     pe.date_creation,
                     pe.date_modification,
@@ -161,6 +162,7 @@ class ProduitEntrepot {
                     pe.emplacement,
                     pe.rayon,
                     pe.etagere,
+                    pe.id_emplacement,
                     pe.actif,
                     pe.date_creation,
                     c.nom  AS categorie_nom,
@@ -236,6 +238,7 @@ class ProduitEntrepot {
         emplacement = null,
         rayon = null,
         etagere = null,
+        id_emplacement = null,
         unites_vente = [],
     }) {
         const connection = await pool.getConnection();
@@ -270,8 +273,8 @@ class ProduitEntrepot {
                      id_categorie, id_marque, id_modele, id_unite, id_fournisseur,
                      prix_achat, prix_vente,
                      quantite_stock, quantite_minimale, quantite_maximale,
-                     emplacement, rayon, etagere, actif)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
+                     emplacement, rayon, etagere, id_emplacement, actif)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
                 [
                     id_entrepot, id_utilisateur, nom.trim(), description,
                     id_categorie || null, id_marque || null, id_modele || null,
@@ -281,6 +284,7 @@ class ProduitEntrepot {
                     parseFloat(quantite_minimale) || 0,
                     parseFloat(quantite_maximale) || 0,
                     emplacement || null, rayon || null, etagere || null,
+                    id_emplacement || null,
                 ]
             );
             const id_produit_entrepot = result.insertId;
@@ -418,6 +422,7 @@ class ProduitEntrepot {
             setIfDefined("emplacement",       data.emplacement,       (v) => v || null);
             setIfDefined("rayon",             data.rayon,             (v) => v || null);
             setIfDefined("etagere",           data.etagere,           (v) => v || null);
+            setIfDefined("id_emplacement",    data.id_emplacement,    (v) => v || null);
 
             // Journal : correction manuelle du stock = un ajustement
             if (data.quantite_stock !== undefined && id_utilisateur) {
@@ -668,4 +673,4 @@ class ProduitEntrepot {
     }
 }
 
-export default ProduitEntrepot;
+export default ProduitEntrepot;

@@ -10,7 +10,8 @@
 //        - refuse   -> rien ne bouge
 //   3. Le demandeur peut annuler tant que la demande est en attente.
 //
-//   Si le demandeur EST le propriétaire, la demande est approuvée immédiatement.
+//   Même si le demandeur EST le propriétaire, le transfert reste « en attente » :
+//   il doit le valider lui-même (le bon de transfert n'existe qu'après validation).
 //
 // Le stock est vérifié à la demande, puis revérifié (avec verrou FOR UPDATE) à l'approbation.
 // Toutes les quantités sont en UNITÉ DE BASE.
@@ -528,17 +529,13 @@ class TransfertStock {
         );
         const id_transfert = ins.insertId;
 
-        // 7) Le propriétaire n'a pas à s'approuver lui-même : exécution immédiate
-        let statut = 'en_attente';
-        let resultat = null;
+        // 7) Toujours « en attente », y compris pour le propriétaire : il valide ensuite
+        //    dans la liste des transferts, et c'est seulement là que le stock bouge
+        //    et que le bon de transfert devient disponible.
         const proprietaire = await this.getProprietaire(id_entrepot, conn);
-        if (proprietaire === Number(id_utilisateur)) {
-            const t = await this._lock(conn, id_transfert);
-            resultat = await this._executer(conn, t, id_utilisateur);
-            statut = 'valide';
-        }
+        const a_valider_par_vous = proprietaire === Number(id_utilisateur);
 
-        return { id_transfert, numero_transfert: numero, numero_lot, statut, ...(resultat || {}) };
+        return { id_transfert, numero_transfert: numero, numero_lot, statut: 'en_attente', a_valider_par_vous };
     }
 
     static async create(params) {
@@ -958,4 +955,4 @@ class TransfertStock {
     }
 }
 
-export default TransfertStock;
+export default TransfertStock;

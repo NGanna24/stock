@@ -140,8 +140,8 @@ class TransfertStockController {
 
             res.status(201).json({
                 success: true,
-                message: result.statut === 'valide'
-                    ? "Transfert effectué : votre stock a été mis à jour"
+                message: result.a_valider_par_vous
+                    ? "Transfert enregistré : validez-le dans la liste des transferts pour mettre le stock à jour et obtenir le bon"
                     : "Demande envoyée : le propriétaire de l'entrepôt doit l'approuver",
                 data: result,
             });
@@ -186,11 +186,11 @@ class TransfertStockController {
                 notes: data.notes || null,
             });
 
-            const valides = resultats.filter((r) => r.statut === 'valide').length;
+            const aValider = resultats.length > 0 && resultats.every((r) => r.a_valider_par_vous);
             res.status(201).json({
                 success: true,
-                message: valides === resultats.length
-                    ? `${resultats.length} transfert(s) effectué(s) : votre stock a été mis à jour`
+                message: aValider
+                    ? `${resultats.length} transfert(s) enregistré(s) : validez-les dans la liste des transferts pour mettre le stock à jour et obtenir le bon`
                     : `${resultats.length} demande(s) envoyée(s) : le propriétaire de l'entrepôt doit les approuver`,
                 data: resultats,
             });
@@ -283,4 +283,4 @@ class TransfertStockController {
     }
 }
 
-export default TransfertStockController;
+export default TransfertStockController;

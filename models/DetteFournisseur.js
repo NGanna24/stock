@@ -8,9 +8,11 @@
 // dans ce cas il est réparti automatiquement sur les commandes les plus anciennes
 // encore dues, et le surplus éventuel reste comme AVANCE chez le fournisseur.
 // Les paiements fournisseurs sont hors caisse (ils ne touchent pas au tiroir).
+import crypto from 'crypto';
 import { pool } from '../config/db.js';
 
-export const MODES_PAIEMENT_FOURNISSEUR = ['especes', 'mobile_money', 'virement', 'cheque', 'carte', 'autre'];
+import { CODES_MODES } from '../utils/modesPaiement.js';
+export const MODES_PAIEMENT_FOURNISSEUR = CODES_MODES;
 
 const fail = (message, statusCode = 400) => {
     const err = new Error(message);
@@ -57,7 +59,7 @@ class DetteFournisseur {
                LEFT JOIN (
                     SELECT id_commande_achat, SUM(montant) AS paye, MAX(date_paiement) AS dernier_paiement
                       FROM paiements_fournisseurs
-                     WHERE id_utilisateur = ? AND id_commande_achat IS NOT NULL
+                     WHERE id_utilisateur = ? AND id_commande_achat IS NOT NULL AND annule = 0
                      GROUP BY id_commande_achat
                ) p ON p.id_commande_achat = ca.id_commande_achat
               WHERE ca.id_utilisateur = ? AND ca.statut <> 'annulee'${filtre}
@@ -88,7 +90,7 @@ class DetteFournisseur {
               GROUP BY id_fournisseur`, p);
         const [pay] = await db.execute(
             `SELECT id_fournisseur, SUM(montant) AS total, MAX(date_paiement) AS dernier FROM paiements_fournisseurs
-              WHERE id_utilisateur = ? AND id_commande_achat IS NULL${filtreF}
+              WHERE id_utilisateur = ? AND id_commande_achat IS NULL AND annule = 0${filtreF}
               GROUP BY id_fournisseur`, p);
         const [enCours] = await db.execute(
             `SELECT id_fournisseur, SUM(montant_total) AS total, COUNT(*) AS nb FROM retours_fournisseurs
@@ -181,10 +183,11 @@ class DetteFournisseur {
         const [paiements] = await pool.execute(
             `SELECT p.id_paiement_fournisseur, DATE_FORMAT(p.date_paiement, '%Y-%m-%d') AS date_paiement,
                     p.montant, p.mode_paiement, p.reference, p.note, p.id_commande_achat,
-                    ca.numero_commande, p.cree_par_nom, p.date_creation
+                    ca.numero_commande, p.cree_par_nom, p.date_creation, p.groupe,
+                    p.justificatif IS NOT NULL AS a_justificatif
                FROM paiements_fournisseurs p
                LEFT JOIN commandes_achat ca ON ca.id_commande_achat = p.id_commande_achat
-              WHERE p.id_utilisateur = ? AND p.id_fournisseur = ?
+              WHERE p.id_utilisateur = ? AND p.id_fournisseur = ? AND p.annule = 0
               ORDER BY p.date_paiement DESC, p.id_paiement_fournisseur DESC
               LIMIT 500`,
             [id_utilisateur, id_fournisseur]
@@ -195,7 +198,7 @@ class DetteFournisseur {
                 .filter((c) => c.recu > 0 || c.paye > 0 || c.retours > 0)
                 .map((c) => ({ ...c, date_commande: isoDate(c.date_commande instanceof Date ? c.date_commande.toISOString() : c.date_commande) || c.date_commande })),
             commandes_sans_reception: commandes.filter((c) => c.nb_receptions === 0 && c.paye === 0).length,
-            paiements: paiements.map((p) => ({ ...p, montant: num(p.montant) })),
+            paiements: paiements.map((p) => ({ ...p, montant: num(p.montant), a_justificatif: !!p.a_justificatif })),
         };
     }
 
@@ -210,7 +213,7 @@ class DetteFournisseur {
      * Retourne les lignes créées.
      */
     static async payer({ id_utilisateur, id_fournisseur, id_commande_achat, montant, date_paiement,
-                         mode_paiement, reference, note, par }) {
+                         mode_paiement, reference, note, par, justificatif = null }) {
         const total = r2(num(String(montant ?? '').replace(',', '.')));
         if (!(total > 0)) throw fail('Le montant doit être supérieur à 0');
         const mode = MODES_PAIEMENT_FOURNISSEUR.includes(mode_paiement) ? mode_paiement : 'especes';
@@ -252,20 +255,22 @@ class DetteFournisseur {
             }
 
             const crees = [];
+            // Un même versement réparti sur plusieurs commandes = un seul « groupe »
+            const groupe = `v-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
             for (const a of affectations) {
                 const [r] = await conn.execute(
                     `INSERT INTO paiements_fournisseurs
                         (id_utilisateur, id_fournisseur, id_commande_achat, date_paiement, montant, mode_paiement,
-                         reference, note, cree_par_type, cree_par_id, cree_par_nom)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                         reference, note, cree_par_type, cree_par_id, cree_par_nom, justificatif, groupe)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                     [id_utilisateur, id_fournisseur, a.id_commande_achat, date, a.montant, mode, ref,
                      affectations.length > 1 ? [texte, `Paiement réparti (${total} FCFA au total)`].filter(Boolean).join(' · ') : texte,
-                     par.type, par.id, par.nom || null]
+                     par.type, par.id ?? null, par.nom || null, justificatif || null, groupe]
                 );
                 crees.push({ id_paiement_fournisseur: r.insertId, ...a });
             }
             await conn.commit();
-            return { total, affectations: crees };
+            return { total, groupe, affectations: crees };
         } catch (e) {
             await conn.rollback();
             throw e;
@@ -274,14 +279,26 @@ class DetteFournisseur {
         }
     }
 
-    /** Suppression d'un paiement (correction d'erreur de saisie). */
-    static async supprimerPaiement(id_paiement, id_utilisateur) {
-        const [r] = await pool.execute(
-            'DELETE FROM paiements_fournisseurs WHERE id_paiement_fournisseur = ? AND id_utilisateur = ?',
+    /**
+     * Annule un versement (on ne supprime jamais) : toutes les lignes du même groupe
+     * (versement réparti sur plusieurs commandes) sont annulées ensemble.
+     */
+    static async annulerPaiement(id_paiement, id_utilisateur, motif, par) {
+        const raison = String(motif || '').trim().slice(0, 500);
+        if (!raison) throw fail("Expliquez la raison de l'annulation");
+        const [rows] = await pool.execute(
+            'SELECT id_paiement_fournisseur, groupe, annule FROM paiements_fournisseurs WHERE id_paiement_fournisseur = ? AND id_utilisateur = ?',
             [id_paiement, id_utilisateur]
         );
-        if (r.affectedRows === 0) throw fail('Paiement introuvable', 404);
-        return true;
+        const p = rows[0];
+        if (!p) throw fail('Paiement introuvable', 404);
+        if (p.annule) throw fail('Ce versement est déjà annulé');
+        const [r] = await pool.execute(
+            `UPDATE paiements_fournisseurs SET annule = 1, motif_annulation = ?, annule_le = NOW(), annule_par_nom = ?
+              WHERE id_utilisateur = ? AND annule = 0 AND ${p.groupe ? 'groupe = ?' : 'id_paiement_fournisseur = ?'}`,
+            [raison, par?.nom || null, id_utilisateur, p.groupe || p.id_paiement_fournisseur]
+        );
+        return r.affectedRows;
     }
 }
 

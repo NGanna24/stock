@@ -60,6 +60,9 @@ import { requireRole, requireRoleForWrites } from './middleware/roleMiddleware.j
 import path from 'path';
 import { fileURLToPath } from 'url';
 import AbonnementRoutes from './routes/AbonnementRoutes.js';
+import ModePaiementRoutes from './routes/ModePaiementRoutes.js';
+import EmplacementRoutes from './routes/EmplacementRoutes.js';
+import CompteFournisseurRoutes from './routes/CompteFournisseurRoutes.js';
 import AbonnementAdminRoutes from './routes/AbonnementAdminRoutes.js';
 
 // ==================== CONFIGURATION ENVIRONNEMENT ====================
@@ -122,6 +125,9 @@ app.get('/api/ping', (req, res) => res.set('Cache-Control', 'no-store').json({ o
 
 app.use('/api/utilisateur', UtilisateurRoutes);
 app.use('/api/abonnement', AbonnementRoutes);
+app.use('/api/modes-paiement', ModePaiementRoutes);
+app.use('/api/emplacements-magasin', EmplacementRoutes);
+app.use('/api/comptes-fournisseurs', CompteFournisseurRoutes);
 app.use('/api/categories', categorieRoutes);
 app.use('/api/modeles', ModeleRoutes);
 app.use('/api/marques', marqueRoutes);

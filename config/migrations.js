@@ -2,7 +2,9 @@
 //
 // Ajouts à la base faits AU DÉMARRAGE, sans risque et sans perte :
 //   - on n'ajoute une colonne / un index / une clé que s'il manque (vérifié dans information_schema) ;
-//   - rien n'est supprimé ni modifié dans les données existantes.
+//   - rien n'est supprimé ni modifié dans les données existantes
+//     (seule exception : les colonnes « mode de paiement » passent d'une liste fermée
+//     à du texte, les valeurs enregistrées restent identiques).
 // Fonctionne avec MySQL 5.7/8 et MariaDB.
 import normaliserTelephone from '../utils/telephone.js';
 import { prochainNumero, estDoublonNumero } from '../utils/numerotation.js';
@@ -85,10 +87,259 @@ CREATE TABLE IF NOT EXISTS abonnements (
         REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
 )`;
 
+// Modes de paiement choisis par chaque boutique (Paramètres)
+const TABLE_MODES_PAIEMENT = `
+CREATE TABLE IF NOT EXISTS modes_paiement_magasin (
+    id_utilisateur INT NOT NULL,
+    code VARCHAR(30) NOT NULL,
+    position INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (id_utilisateur, code),
+    CONSTRAINT fk_mpm_utilisateur FOREIGN KEY (id_utilisateur)
+        REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+)`;
+
+// Colonnes « mode de paiement » : liste fermée → texte libre (Wave, Orange Money…).
+// Les valeurs déjà enregistrées (especes, carte…) restent identiques.
+const COLONNES_MODE_PAIEMENT = ['paiements', 'factures_vente', 'depenses', 'paiements_fournisseurs'];
+
+// Emplacements de la boutique : emplacement > rayon > étagère
+const TABLE_EMPLACEMENTS = `
+CREATE TABLE IF NOT EXISTS emplacements_magasin (
+    id_emplacement INT AUTO_INCREMENT PRIMARY KEY,
+    id_utilisateur INT NOT NULL,
+    id_parent INT NULL,
+    niveau ENUM('emplacement', 'rayon', 'etagere') NOT NULL,
+    nom VARCHAR(100) NOT NULL,
+    position INT NOT NULL DEFAULT 0,
+    date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_empl_util (id_utilisateur, niveau),
+    INDEX idx_empl_parent (id_parent),
+    CONSTRAINT fk_empl_utilisateur FOREIGN KEY (id_utilisateur)
+        REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
+    CONSTRAINT fk_empl_parent FOREIGN KEY (id_parent)
+        REFERENCES emplacements_magasin(id_emplacement) ON DELETE CASCADE
+)`;
+
+async function assouplirModesPaiement(conn) {
+    for (const table of COLONNES_MODE_PAIEMENT) {
+        const [r] = await conn.query(
+            `SELECT COLUMN_TYPE AS type, IS_NULLABLE AS nul FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = 'mode_paiement' LIMIT 1`,
+            [table]
+        );
+        if (!r.length || !/^enum/i.test(r[0].type)) continue;
+        const nul = r[0].nul === 'YES' ? 'NULL' : 'NOT NULL';
+        await conn.query(`ALTER TABLE \`${table}\` MODIFY mode_paiement VARCHAR(30) ${nul} DEFAULT 'especes'`);
+        console.log(` [Migration] ${table}.mode_paiement : modes de paiement libres`);
+    }
+}
+
+// Reprend les emplacements tapés en texte sur les produits (une seule fois par produit)
+// Reprend l'emplacement saisi en texte libre et le range dans les listes.
+// Boutique : produits.id_emplacement_magasin ; entrepôt : produits_entrepot.id_emplacement
+const REPRISES = [
+    { table: 'produits', id: 'id_produit', lien: 'id_emplacement_magasin', entrepot: false, racine: 'Boutique' },
+    { table: 'produits_entrepot', id: 'id_produit_entrepot', lien: 'id_emplacement', entrepot: true, racine: 'Entrepôt' },
+];
+
+async function reprendreEmplacementsTexte(conn, cfg) {
+    const [produits] = await conn.query(
+        `SELECT ${cfg.id} AS id, id_utilisateur, ${cfg.entrepot ? 'id_entrepot' : 'NULL'} AS id_entrepot,
+                TRIM(emplacement) AS e, TRIM(rayon) AS r, TRIM(etagere) AS t
+         FROM ${cfg.table}
+         WHERE ${cfg.lien} IS NULL
+           AND (COALESCE(TRIM(emplacement), '') <> '' OR COALESCE(TRIM(rayon), '') <> '' OR COALESCE(TRIM(etagere), '') <> '')`
+    );
+    if (!produits.length) return;
+    const cache = new Map();
+    const noeud = async (p, parent, niveau, nom) => {
+        const portee = cfg.entrepot ? `e${p.id_entrepot}` : `u${p.id_utilisateur}`;
+        const cle = `${portee}|${parent || 0}|${niveau}|${nom.toLowerCase()}`;
+        if (cache.has(cle)) return cache.get(cle);
+        const [ex] = await conn.query(
+            `SELECT id_emplacement FROM emplacements_magasin
+             WHERE ${cfg.entrepot ? 'id_entrepot = ?' : 'id_utilisateur = ? AND id_entrepot IS NULL'}
+               AND niveau = ? AND LOWER(nom) = LOWER(?) AND ${parent ? 'id_parent = ?' : 'id_parent IS NULL'} LIMIT 1`,
+            [cfg.entrepot ? p.id_entrepot : p.id_utilisateur, niveau, nom, ...(parent ? [parent] : [])]
+        );
+        let id = ex[0]?.id_emplacement;
+        if (!id) {
+            const [ins] = await conn.query(
+                'INSERT INTO emplacements_magasin (id_utilisateur, id_entrepot, id_parent, niveau, nom) VALUES (?, ?, ?, ?, ?)',
+                [p.id_utilisateur, p.id_entrepot || null, parent || null, niveau, nom.slice(0, 100)]
+            );
+            id = ins.insertId;
+        }
+        cache.set(cle, id);
+        return id;
+    };
+    for (const p of produits) {
+        // Rayon ou étagère sans emplacement : rangés dans « Boutique » (ou « Entrepôt »)
+        const e = await noeud(p, null, 'emplacement', p.e || cfg.racine);
+        let feuille = e;
+        if (p.r || p.t) feuille = await noeud(p, e, 'rayon', p.r || 'Sans rayon');
+        if (p.t) feuille = await noeud(p, feuille, 'etagere', p.t);
+        await conn.query(`UPDATE ${cfg.table} SET ${cfg.lien} = ? WHERE ${cfg.id} = ?`, [feuille, p.id]);
+        if (!p.e) await conn.query(`UPDATE ${cfg.table} SET emplacement = ? WHERE ${cfg.id} = ?`, [cfg.racine, p.id]);
+        if (p.t && !p.r) await conn.query(`UPDATE ${cfg.table} SET rayon = 'Sans rayon' WHERE ${cfg.id} = ?`, [p.id]);
+    }
+    console.log(` [Migration] emplacements repris pour ${produits.length} produit(s) (${cfg.table})`);
+}
+
+
+// ============================================================
+// COMPTES FOURNISSEURS : carnet de compte du commerçant chez chaque fournisseur
+// (achats, versements, bonus, plafond, rapprochements). Indépendant du stock.
+// ============================================================
+const TABLE_COMPTES_FOURNISSEURS = `
+CREATE TABLE IF NOT EXISTS comptes_fournisseurs (
+    id_compte INT AUTO_INCREMENT PRIMARY KEY,
+    id_utilisateur INT NOT NULL,
+    id_fournisseur INT NOT NULL,
+    plafond DECIMAL(15,2) NOT NULL DEFAULT 0,
+    solde_initial DECIMAL(15,2) NOT NULL DEFAULT 0,
+    seuil_alerte_pct TINYINT UNSIGNED NOT NULL DEFAULT 20,
+    note TEXT NULL,
+    actif TINYINT(1) NOT NULL DEFAULT 1,
+    date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_cf_fournisseur (id_utilisateur, id_fournisseur),
+    CONSTRAINT fk_cf_utilisateur FOREIGN KEY (id_utilisateur)
+        REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
+    CONSTRAINT fk_cf_fournisseur FOREIGN KEY (id_fournisseur)
+        REFERENCES fournisseurs(id_fournisseur) ON DELETE CASCADE
+)`;
+
+// Une ligne par opération. On ne supprime jamais : une annulation est une ligne de plus.
+const TABLE_OPERATIONS_COMPTE_FOURNISSEUR = `
+CREATE TABLE IF NOT EXISTS operations_compte_fournisseur (
+    id_operation INT AUTO_INCREMENT PRIMARY KEY,
+    id_compte INT NOT NULL,
+    id_utilisateur INT NOT NULL,
+    type ENUM('achat','versement','bonus','utilisation_bonus','ajustement','plafond','annulation') NOT NULL,
+    date_operation DATE NOT NULL,
+    montant DECIMAL(15,2) NOT NULL DEFAULT 0,
+    montant_paye DECIMAL(15,2) NOT NULL DEFAULT 0,
+    bonus_utilise DECIMAL(15,2) NOT NULL DEFAULT 0,
+    sur_dette TINYINT(1) NOT NULL DEFAULT 0,
+    mode_paiement VARCHAR(30) NULL,
+    type_bonus ENUM('libre','conditionnel','avoir') NULL,
+    date_expiration DATE NULL,
+    reference VARCHAR(100) NULL,
+    observation TEXT NULL,
+    justificatif VARCHAR(255) NULL,
+    id_operation_liee INT NULL,
+    annulee TINYINT(1) NOT NULL DEFAULT 0,
+    dette_avant DECIMAL(15,2) NULL,
+    dette_apres DECIMAL(15,2) NULL,
+    bonus_avant DECIMAL(15,2) NULL,
+    bonus_apres DECIMAL(15,2) NULL,
+    plafond_avant DECIMAL(15,2) NULL,
+    plafond_apres DECIMAL(15,2) NULL,
+    cree_par_type ENUM('utilisateur','employe') NULL,
+    cree_par_id INT NULL,
+    cree_par_nom VARCHAR(100) NULL,
+    date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_ocf_compte (id_compte, date_operation),
+    INDEX idx_ocf_liee (id_operation_liee),
+    CONSTRAINT fk_ocf_compte FOREIGN KEY (id_compte)
+        REFERENCES comptes_fournisseurs(id_compte) ON DELETE CASCADE
+)`;
+
+const TABLE_RAPPROCHEMENTS_FOURNISSEUR = `
+CREATE TABLE IF NOT EXISTS rapprochements_fournisseur (
+    id_rapprochement INT AUTO_INCREMENT PRIMARY KEY,
+    id_compte INT NOT NULL,
+    id_utilisateur INT NOT NULL,
+    date_verification DATE NOT NULL,
+    solde_fournisseur DECIMAL(15,2) NOT NULL,
+    solde_miyo DECIMAL(15,2) NOT NULL,
+    ecart DECIMAL(15,2) NOT NULL,
+    observation TEXT NULL,
+    statut ENUM('conforme','ecart','resolu') NOT NULL,
+    note_resolution TEXT NULL,
+    date_resolution DATETIME NULL,
+    cree_par_nom VARCHAR(100) NULL,
+    date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_rf_compte (id_compte, date_verification),
+    CONSTRAINT fk_rf_compte FOREIGN KEY (id_compte)
+        REFERENCES comptes_fournisseurs(id_compte) ON DELETE CASCADE
+)`;
+
+
+// Paiements fournisseurs = les versements du compte fournisseur (une seule liste).
+// On ne supprime plus : on annule (avec la raison). Un versement réparti sur plusieurs
+// commandes garde un même « groupe ». Photo du reçu possible.
+async function unifierPaiementsFournisseurs(conn) {
+    const colonnes = [
+        ['justificatif', 'VARCHAR(255) NULL'],
+        ['groupe', 'VARCHAR(40) NULL'],
+        ['annule', 'TINYINT(1) NOT NULL DEFAULT 0'],
+        ['motif_annulation', 'VARCHAR(500) NULL'],
+        ['annule_le', 'DATETIME NULL'],
+        ['annule_par_nom', 'VARCHAR(100) NULL'],
+    ];
+    for (const [c, def] of colonnes) {
+        if (!(await colonneExiste(conn, 'paiements_fournisseurs', c))) {
+            await conn.query(`ALTER TABLE paiements_fournisseurs ADD COLUMN ${c} ${def}`);
+            console.log(` [Migration] paiements_fournisseurs.${c} ajoutée`);
+        }
+    }
+    // Versements saisis dans la première version des comptes fournisseurs → paiements fournisseurs
+    const [vers] = await conn.query(
+        `SELECT o.*, c.id_fournisseur FROM operations_compte_fournisseur o
+         JOIN comptes_fournisseurs c ON c.id_compte = o.id_compte WHERE o.type = 'versement'`
+    );
+    for (const v of vers) {
+        const [an] = await conn.query(
+            "SELECT observation, cree_par_nom, date_creation FROM operations_compte_fournisseur WHERE type = 'annulation' AND id_operation_liee = ? LIMIT 1",
+            [v.id_operation]
+        );
+        await conn.query(
+            `INSERT INTO paiements_fournisseurs
+                (id_utilisateur, id_fournisseur, id_commande_achat, date_paiement, montant, mode_paiement, reference, note,
+                 cree_par_type, cree_par_id, cree_par_nom, date_creation, justificatif, groupe,
+                 annule, motif_annulation, annule_le, annule_par_nom)
+             VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [v.id_utilisateur, v.id_fournisseur, v.date_operation, v.montant, v.mode_paiement || 'especes', v.reference, v.observation,
+                v.cree_par_type, v.cree_par_id, v.cree_par_nom, v.date_creation, v.justificatif, `cf-${v.id_operation}`,
+                v.annulee ? 1 : 0, an[0]?.observation || null, an[0]?.date_creation || null, an[0]?.cree_par_nom || null]
+        );
+        await conn.query("DELETE FROM operations_compte_fournisseur WHERE type = 'annulation' AND id_operation_liee = ?", [v.id_operation]);
+        await conn.query('DELETE FROM operations_compte_fournisseur WHERE id_operation = ?', [v.id_operation]);
+    }
+    if (vers.length) console.log(` [Migration] ${vers.length} versement(s) déplacé(s) vers paiements_fournisseurs`);
+}
+
 export async function executerMigrations(pool) {
     const conn = await pool.getConnection();
     try {
         await conn.query(TABLE_ABONNEMENTS);
+        await conn.query(TABLE_MODES_PAIEMENT);
+        await assouplirModesPaiement(conn);
+        await conn.query(TABLE_EMPLACEMENTS);
+        await conn.query(TABLE_COMPTES_FOURNISSEURS);
+        await conn.query(TABLE_OPERATIONS_COMPTE_FOURNISSEUR);
+        await conn.query(TABLE_RAPPROCHEMENTS_FOURNISSEUR);
+        await unifierPaiementsFournisseurs(conn);
+        if (!(await colonneExiste(conn, 'produits', 'id_emplacement_magasin'))) {
+            await conn.query('ALTER TABLE produits ADD COLUMN id_emplacement_magasin INT NULL');
+            await conn.query('ALTER TABLE produits ADD INDEX idx_produit_emplacement (id_emplacement_magasin)');
+            console.log(' [Migration] produits.id_emplacement_magasin ajoutée');
+        }
+        // Emplacements propres à chaque entrepôt (id_entrepot vide = boutique)
+        if (!(await colonneExiste(conn, 'emplacements_magasin', 'id_entrepot'))) {
+            await conn.query('ALTER TABLE emplacements_magasin ADD COLUMN id_entrepot INT NULL AFTER id_utilisateur');
+            await conn.query('ALTER TABLE emplacements_magasin ADD INDEX idx_empl_entrepot (id_entrepot, niveau)');
+            await conn.query(`ALTER TABLE emplacements_magasin ADD CONSTRAINT fk_empl_entrepot
+                FOREIGN KEY (id_entrepot) REFERENCES entrepots(id_entrepot) ON DELETE CASCADE`);
+            console.log(' [Migration] emplacements_magasin.id_entrepot ajoutée');
+        }
+        if (!(await colonneExiste(conn, 'produits_entrepot', 'id_emplacement'))) {
+            await conn.query('ALTER TABLE produits_entrepot ADD COLUMN id_emplacement INT NULL');
+            await conn.query('ALTER TABLE produits_entrepot ADD INDEX idx_pe_emplacement (id_emplacement)');
+            console.log(' [Migration] produits_entrepot.id_emplacement ajoutée');
+        }
+        for (const cfg of REPRISES) await reprendreEmplacementsTexte(conn, cfg);
         for (const [table, colonne, definition] of COLONNES) {
             if (!(await colonneExiste(conn, table, colonne))) {
                 await conn.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${colonne}\` ${definition}`);

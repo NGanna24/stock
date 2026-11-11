@@ -3,6 +3,7 @@ import Produit from '../models/Produit.js';
 import Modele from '../models/Modele.js';
 import UniteVente from '../models/UniteVente.js';
 import { pool } from '../config/db.js';
+import EmplacementMagasin from '../models/EmplacementMagasin.js';
 
 class ProduitController {
 /** 
@@ -376,7 +377,11 @@ static async createProduit(req, res) {
         // ============================================================
         // 3. CRÉER LE PRODUIT
         // ============================================================
+        if (data.id_emplacement_magasin !== undefined) {
+            data.id_emplacement_magasin = await EmplacementMagasin.verifierPourProduit(req.workspaceId, data.id_emplacement_magasin);
+        }
         const id = await Produit.create(data, req.workspaceId);
+        if (data.id_emplacement_magasin !== undefined) await EmplacementMagasin.synchroniser(req.workspaceId);
 
         // ============================================================
         // 4. CRÉER LES UNITÉS DE VENTE
@@ -531,7 +536,12 @@ static async updateProduit(req, res) {
         }
 
         // ========== 1. METTRE À JOUR LE PRODUIT ==========
+        if (data.id_emplacement_magasin !== undefined) {
+            data.id_emplacement_magasin = await EmplacementMagasin.verifierPourProduit(req.workspaceId, data.id_emplacement_magasin);
+            if (!data.id_emplacement_magasin) { data.emplacement = null; data.rayon = null; data.etagere = null; }
+        }
         const updated = await Produit.update(id, data, req.workspaceId);
+        if (data.id_emplacement_magasin) await EmplacementMagasin.synchroniser(req.workspaceId);
 
         if (!updated) {
             await connection.rollback();
@@ -1121,4 +1131,4 @@ try {
 }
 }
 
-export default ProduitController;
+export default ProduitController;

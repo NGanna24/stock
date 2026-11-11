@@ -14,7 +14,8 @@ import Client from '../../models/Client.js';
 import { normaliser, singulier, score } from './Recherche.js';
 
 const PEUVENT_VENDRE = ['admin', 'manager', 'caissier'];
-const MODES = ['especes', 'carte', 'virement', 'cheque'];
+import { CODES_MODES } from '../../utils/modesPaiement.js';
+const MODES = CODES_MODES;
 
 const num = (v) => {
   const n = parseFloat(String(v ?? '').replace(',', '.'));

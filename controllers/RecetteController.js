@@ -1,5 +1,6 @@
 // controllers/RecetteController.js
 import Recette from '../models/Recette.js';
+import { libelleMode } from '../utils/modesPaiement.js';
 
 const sendError = (res, error, fallback) => {
     if (!error.statusCode) console.error('❌', error);
@@ -82,7 +83,7 @@ class RecetteController {
             const filtres = filtresDe(req.query);
             const recettes = await Recette.findAll(req.workspaceId, filtres);
             const { stats } = Recette.resumer(recettes, filtres);
-            const MODES = { especes: 'Espèces', carte: 'Carte', virement: 'Virement', cheque: 'Chèque', autre: 'Autre' };
+            const MODES = new Proxy({}, { get: (_, code) => libelleMode(code) });
             const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
             const fr = (d) => (d ? d.split('-').reverse().join('/') : '');
             const lignes = [

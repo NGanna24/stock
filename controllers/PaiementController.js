@@ -1,6 +1,7 @@
 // controllers/PaiementController.js
 import Paiement from '../models/Paiement.js';
 import Facture from '../models/Facture.js';
+import { estModeValide } from '../utils/modesPaiement.js';
 
 class PaiementController {
     /**
@@ -252,8 +253,7 @@ class PaiementController {
         try {
             const { mode } = req.params;
 
-            const modesValides = ['especes', 'carte', 'virement', 'cheque', 'autre'];
-            if (!modesValides.includes(mode)) {
+            if (!estModeValide(mode)) {
                 return res.status(400).json({
                     success: false,
                     message: 'Mode de paiement invalide'
@@ -365,4 +365,4 @@ class PaiementController {
     }
 }
 
-export default PaiementController;
+export default PaiementController;

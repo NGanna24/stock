@@ -8,7 +8,9 @@
 // Tout est cloisonné par compte : id_utilisateur = req.workspaceId.
 import { pool } from '../config/db.js';
 
-export const MODES_PAIEMENT = ['especes', 'carte', 'virement', 'cheque', 'autre'];
+import { CODES_MODES } from '../utils/modesPaiement.js';
+// Tous les modes connus (Wave, Orange Money…) — la boutique choisit les siens dans Paramètres
+export const MODES_PAIEMENT = CODES_MODES;
 
 /** Catégories créées au premier accès d'un compte qui n'en a encore aucune */
 export const CATEGORIES_PAR_DEFAUT = [

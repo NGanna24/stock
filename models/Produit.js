@@ -639,6 +639,14 @@ static async findByModele(modeleNom, id_utilisateur) {
             ]
         );
 
+        // Emplacement choisi dans la liste (emplacement > rayon > étagère)
+        if (data.id_emplacement_magasin !== undefined) {
+            await pool.execute(
+                'UPDATE produits SET id_emplacement_magasin = ? WHERE id_produit = ? AND id_utilisateur = ?',
+                [data.id_emplacement_magasin || null, result.insertId, id_utilisateur]
+            );
+        }
+
         return result.insertId;
     }
 
@@ -711,6 +719,14 @@ static async findByModele(modeleNom, id_utilisateur) {
                 id_utilisateur
             ]
         );
+
+        // Emplacement choisi dans la liste ; absent (ancienne application) = inchangé
+        if (data.id_emplacement_magasin !== undefined) {
+            await pool.execute(
+                'UPDATE produits SET id_emplacement_magasin = ? WHERE id_produit = ? AND id_utilisateur = ?',
+                [data.id_emplacement_magasin || null, id, id_utilisateur]
+            );
+        }
 
         return result.affectedRows > 0;
     }
@@ -1008,4 +1024,4 @@ static async filter(filters, id_utilisateur) {
     }
 }
 
-export default Produit;
+export default Produit;

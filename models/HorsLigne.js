@@ -10,7 +10,8 @@ import { pool } from '../config/db.js';
 import CommandeVente from './CommandeVente.js';
 
 const ID_LOCAL_RE = /^[A-Za-z0-9_-]{8,64}$/;
-const MODES = ['especes', 'carte', 'virement', 'cheque', 'autre'];
+import { CODES_MODES } from '../utils/modesPaiement.js';
+const MODES = CODES_MODES;
 const RESERVATION_EXPIREE_MS = 2 * 60 * 1000;
 
 const erreur = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });

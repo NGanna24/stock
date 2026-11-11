@@ -5,6 +5,7 @@
 import ProduitEntrepot from '../models/ProduitEntrepot.js';
 import Entrepot from '../models/Entrepot.js';
 import CommandeAchat from '../models/CommandeAchat.js';
+import EmplacementMagasin from '../models/EmplacementMagasin.js';
 
 class ProduitEntrepotController {
 
@@ -199,7 +200,10 @@ class ProduitEntrepotController {
                 });
             }
 
-            // 4) Création
+            // 4) Emplacement choisi dans les listes de CET entrepôt
+            const id_emplacement = await EmplacementMagasin.verifierPourProduit(id_utilisateur, data.id_emplacement, id_entrepot);
+
+            // 5) Création
             const id_produit_entrepot = await ProduitEntrepot.create({
                 id_entrepot,
                 id_utilisateur,
@@ -218,8 +222,10 @@ class ProduitEntrepotController {
                 emplacement: data.emplacement || null,
                 rayon: data.rayon || null,
                 etagere: data.etagere || null,
+                id_emplacement,
                 unites_vente,
             });
+            if (id_emplacement) await EmplacementMagasin.synchroniser(id_utilisateur, id_entrepot);
 
             const newProduit = await ProduitEntrepot.findById(id_produit_entrepot);
 
@@ -263,7 +269,13 @@ class ProduitEntrepotController {
                 }
             }
 
+            if (data.id_emplacement !== undefined) {
+                data.id_emplacement = await EmplacementMagasin.verifierPourProduit(id_utilisateur, data.id_emplacement, id_entrepot);
+                if (!data.id_emplacement) { data.emplacement = null; data.rayon = null; data.etagere = null; }
+            }
+
             await ProduitEntrepot.update(id_produit_entrepot, id_entrepot, data, req.workspaceId);
+            if (data.id_emplacement) await EmplacementMagasin.synchroniser(id_utilisateur, id_entrepot);
 
             const produit = await ProduitEntrepot.findById(id_produit_entrepot);
 
@@ -461,4 +473,4 @@ class ProduitEntrepotController {
     }
 }
 
-export default ProduitEntrepotController;
+export default ProduitEntrepotController;
