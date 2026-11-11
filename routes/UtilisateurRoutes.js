@@ -2,6 +2,7 @@
 import express from 'express';
 import UtilisateurController from '../controllers/UtilisateurController.js';
 import { authenticateToken } from '../middleware/middleware.js';
+import { uploadPhotoProfil } from '../middleware/uploadPhotoProfil.js';
 import { limiterParAppareil } from '../utils/securite.js';
 
 const router = express.Router();
@@ -13,6 +14,8 @@ router.post('/login', limiterParAppareil('connexion', 20, 15), UtilisateurContro
 // ==================== ROUTES PROTÉGÉES ====================
 router.get('/profile', authenticateToken, UtilisateurController.getProfile);
 router.put('/profile', authenticateToken, UtilisateurController.updateProfile);
+router.post('/photo', authenticateToken, uploadPhotoProfil, UtilisateurController.definirPhoto);
+router.delete('/photo', authenticateToken, UtilisateurController.definirPhoto);
 
 // Session : prolonger, déverrouiller l'écran, fermer toutes les sessions, se déconnecter
 router.post('/renouveler', authenticateToken, UtilisateurController.renouveler);

@@ -2,6 +2,7 @@
 import express from 'express';
 import EmployeController from '../controllers/EmployeController.js';
 import { authenticateToken } from '../middleware/middleware.js';
+import { uploadPhotoProfil } from '../middleware/uploadPhotoProfil.js';
 
 const router = express.Router();
 
@@ -17,6 +18,8 @@ router.post('/',       EmployeController.create);
 router.get('/:id',     EmployeController.getById);
 router.put('/:id',     EmployeController.update);
 router.patch('/:id/actif', EmployeController.toggleActivation);
+router.post('/:id/photo', uploadPhotoProfil, EmployeController.definirPhoto);
+router.delete('/:id/photo', EmployeController.definirPhoto);
 router.delete('/:id',  EmployeController.delete);
 
 export default router;

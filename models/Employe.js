@@ -2,6 +2,12 @@
 import { pool } from '../config/db.js';
 import bcrypt from 'bcryptjs';
 
+// Champs de la fiche employé (le salaire n'est lu et modifié que par le patron)
+export const CHAMPS_FICHE = [
+    'date_naissance', 'adresse', 'quartier', 'piece_type', 'piece_numero',
+    'date_embauche', 'salaire', 'contact_urgence_nom', 'contact_urgence_tel', 'notes',
+];
+
 class Employe {
     /**
      * ============================================================
@@ -139,6 +145,7 @@ class Employe {
         const [rows] = await pool.execute(
             `SELECT e.id_employe, e.fullname, e.slug, e.telephone, 
                     e.actif, e.date_creation, e.derniere_connexion,
+                    e.photo_url, e.date_embauche, e.quartier,
                     e.id_magasin, r.nom AS role_nom, r.id_role,
                     m.ville AS magasin_ville
              FROM employes e
@@ -227,6 +234,14 @@ static async update(id, id_utilisateur, data) {
         values.push(hashedPassword);
     }
 
+    // Fiche employé (chaque champ envoyé est enregistré ; vide = effacé)
+    for (const champ of CHAMPS_FICHE) {
+        if (data[champ] !== undefined) {
+            updates.push(`${champ} = ?`);
+            values.push(data[champ] === '' ? null : data[champ]);
+        }
+    }
+
     if (updates.length === 0) return false;
 
     values.push(id, id_utilisateur);
@@ -239,6 +254,15 @@ static async update(id, id_utilisateur, data) {
 
     return result.affectedRows > 0;
 }
+
+    /** Photo de profil : renvoie l'ancienne adresse (pour supprimer le fichier) */
+    static async definirPhoto(id, id_utilisateur, url) {
+        const [[ligne]] = await pool.execute(
+            'SELECT photo_url FROM employes WHERE id_employe = ? AND id_utilisateur = ?', [id, id_utilisateur]);
+        if (!ligne) return { trouve: false };
+        await pool.execute('UPDATE employes SET photo_url = ? WHERE id_employe = ? AND id_utilisateur = ?', [url, id, id_utilisateur]);
+        return { trouve: true, ancienne: ligne.photo_url };
+    }
 
     /**
      * ============================================================

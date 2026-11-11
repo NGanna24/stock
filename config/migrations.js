@@ -55,6 +55,20 @@ const COLONNES = [
     ['employes', 'tentatives_echouees', 'INT NOT NULL DEFAULT 0'],
     ['employes', 'bloque_jusqua', 'DATETIME NULL'],
     ['employes', 'session_version', 'INT NOT NULL DEFAULT 1'],
+    // ---------- Photo de profil (fichier public au nom aléatoire) ----------
+    ['utilisateurs', 'photo_url', 'VARCHAR(255) NULL'],
+    ['employes', 'photo_url', 'VARCHAR(255) NULL'],
+    // ---------- Fiche employé ----------
+    ['employes', 'date_naissance', 'DATE NULL'],
+    ['employes', 'adresse', 'VARCHAR(255) NULL'],
+    ['employes', 'quartier', 'VARCHAR(100) NULL'],
+    ['employes', 'piece_type', 'VARCHAR(30) NULL'],
+    ['employes', 'piece_numero', 'VARCHAR(60) NULL'],
+    ['employes', 'date_embauche', 'DATE NULL'],
+    ['employes', 'salaire', 'DECIMAL(15, 2) NULL'],
+    ['employes', 'contact_urgence_nom', 'VARCHAR(120) NULL'],
+    ['employes', 'contact_urgence_tel', 'VARCHAR(30) NULL'],
+    ['employes', 'notes', 'TEXT NULL'],
     // ---------- Vente rattachée à une fiche client ----------
     ['commandes_vente', 'id_client', 'INT NULL'],
 ];
@@ -310,6 +324,35 @@ async function unifierPaiementsFournisseurs(conn) {
     if (vers.length) console.log(` [Migration] ${vers.length} versement(s) déplacé(s) vers paiements_fournisseurs`);
 }
 
+
+// ============================================================
+// CACHETS ET SIGNATURE des documents (images rangées hors du dossier public)
+// ============================================================
+const TABLE_CACHETS = `
+CREATE TABLE IF NOT EXISTS cachets_magasin (
+    id_cachet INT AUTO_INCREMENT PRIMARY KEY,
+    id_utilisateur INT NOT NULL,
+    nom VARCHAR(80) NOT NULL,
+    fichier VARCHAR(255) NOT NULL,
+    position INT NOT NULL DEFAULT 0,
+    date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_cachets_u (id_utilisateur),
+    CONSTRAINT fk_cachets_u FOREIGN KEY (id_utilisateur)
+        REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+)`;
+
+// Réglages des documents : quel cachet sur quel document, signature, modèle de facture
+const TABLE_REGLAGES_DOCUMENTS = `
+CREATE TABLE IF NOT EXISTS reglages_documents (
+    id_utilisateur INT PRIMARY KEY,
+    signature_fichier VARCHAR(255) NULL,
+    modele_facture VARCHAR(30) NOT NULL DEFAULT 'classique',
+    regles JSON NULL,
+    date_modification DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_regdoc_u FOREIGN KEY (id_utilisateur)
+        REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+)`;
+
 export async function executerMigrations(pool) {
     const conn = await pool.getConnection();
     try {
@@ -321,6 +364,8 @@ export async function executerMigrations(pool) {
         await conn.query(TABLE_OPERATIONS_COMPTE_FOURNISSEUR);
         await conn.query(TABLE_RAPPROCHEMENTS_FOURNISSEUR);
         await unifierPaiementsFournisseurs(conn);
+        await conn.query(TABLE_CACHETS);
+        await conn.query(TABLE_REGLAGES_DOCUMENTS);
         if (!(await colonneExiste(conn, 'produits', 'id_emplacement_magasin'))) {
             await conn.query('ALTER TABLE produits ADD COLUMN id_emplacement_magasin INT NULL');
             await conn.query('ALTER TABLE produits ADD INDEX idx_produit_emplacement (id_emplacement_magasin)');

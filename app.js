@@ -63,6 +63,7 @@ import AbonnementRoutes from './routes/AbonnementRoutes.js';
 import ModePaiementRoutes from './routes/ModePaiementRoutes.js';
 import EmplacementRoutes from './routes/EmplacementRoutes.js';
 import CompteFournisseurRoutes from './routes/CompteFournisseurRoutes.js';
+import ReglagesDocumentsRoutes from './routes/ReglagesDocumentsRoutes.js';
 import AbonnementAdminRoutes from './routes/AbonnementAdminRoutes.js';
 
 // ==================== CONFIGURATION ENVIRONNEMENT ====================
@@ -128,6 +129,7 @@ app.use('/api/abonnement', AbonnementRoutes);
 app.use('/api/modes-paiement', ModePaiementRoutes);
 app.use('/api/emplacements-magasin', EmplacementRoutes);
 app.use('/api/comptes-fournisseurs', CompteFournisseurRoutes);
+app.use('/api/documents-reglages', ReglagesDocumentsRoutes);
 app.use('/api/categories', categorieRoutes);
 app.use('/api/modeles', ModeleRoutes);
 app.use('/api/marques', marqueRoutes);

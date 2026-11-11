@@ -7,6 +7,7 @@ import Employe from '../models/Employe.js';
 import PasswordReset from '../models/PasswordReset.js';
 import { sendResetCode } from '../Services/emailService.js';
 import Entrepot from '../models/Entrepot.js';
+import { urlPhoto, supprimerPhoto } from '../middleware/uploadPhotoProfil.js';
 import {
     signerJeton, minutesDeBlocage, noterEchec, effacerEchecs, versionSession, revoquerSessions, MAX_ESSAIS, BLOCAGE_MINUTES,
 } from '../utils/securite.js';
@@ -462,6 +463,7 @@ return res.status(200).json({
         role: user.role_nom,
         id_magasin: type === 'employe' ? user.id_magasin : null,
         actif: user.actif,
+        photo_url: user.photo_url || null,
         entrepots,        // ✅ NOUVEAU
         fonctionnalites,  // ✅ NOUVEAU
     }
@@ -600,6 +602,7 @@ return res.status(200).json({
         role: user.role_nom,
         id_magasin: null,
         actif: user.actif,
+        photo_url: user.photo_url || null,
         date_creation: user.date_creation,
         derniere_connexion: user.derniere_connexion,
         entrepots,        // ✅ NOUVEAU
@@ -733,6 +736,32 @@ return res.status(200).json({
      * Fiche « profil » d'un employé, au même format que la réponse de connexion
      * (le slug reste celui du patron : il sert aux adresses des pages).
      */
+    /**
+     * MA PHOTO DE PROFIL (patron ou employé, chacun la sienne)
+     * POST /api/utilisateur/photo  (champ « photo »)   DELETE /api/utilisateur/photo
+     */
+    static async definirPhoto(req, res) {
+        const url = req.file ? urlPhoto(req.file.filename) : null;
+        try {
+            if (req.method === 'POST' && !req.file) {
+                return res.status(400).json({ success: false, message: 'Aucune photo reçue' });
+            }
+            const r = req.user.type === 'employe'
+                ? await Employe.definirPhoto(req.user.id_employe, req.user.id_utilisateur, url)
+                : await Utilisateur.definirPhoto(req.user.id, url);
+            if (!r.trouve) {
+                if (url) supprimerPhoto(url);
+                return res.status(404).json({ success: false, message: 'Compte introuvable' });
+            }
+            if (r.ancienne && r.ancienne !== url) supprimerPhoto(r.ancienne);
+            return res.json({ success: true, photo_url: url, message: url ? 'Photo enregistrée' : 'Photo retirée' });
+        } catch (error) {
+            if (url) supprimerPhoto(url);
+            console.error('❌ PhotoProfil error:', error);
+            return res.status(500).json({ success: false, message: "Impossible d'enregistrer la photo" });
+        }
+    }
+
     static profilEmploye(emp) {
         return {
             id: emp.id_employe,
@@ -744,6 +773,7 @@ return res.status(200).json({
             role: emp.role_nom,
             id_magasin: emp.id_magasin,
             actif: emp.actif,
+            photo_url: emp.photo_url || null,
             date_creation: emp.date_creation,
             derniere_connexion: emp.derniere_connexion,
             entrepots: [],
@@ -853,7 +883,8 @@ return res.status(200).json({
                     email: updatedUser.email,
                     role: updatedUser.role_nom,
                     id_magasin: null,
-                    actif: updatedUser.actif
+                    actif: updatedUser.actif,
+                    photo_url: updatedUser.photo_url || null
                 }
             });
 

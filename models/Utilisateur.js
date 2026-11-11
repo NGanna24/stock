@@ -499,6 +499,14 @@ static async findByEmail(email) {
             throw error;
         }
     }
+
+    /** Photo de profil du patron : renvoie l'ancienne adresse (pour supprimer le fichier) */
+    static async definirPhoto(id, url) {
+        const [[ligne]] = await pool.execute('SELECT photo_url FROM utilisateurs WHERE id_utilisateur = ?', [id]);
+        if (!ligne) return { trouve: false };
+        await pool.execute('UPDATE utilisateurs SET photo_url = ? WHERE id_utilisateur = ?', [url, id]);
+        return { trouve: true, ancienne: ligne.photo_url };
+    }
 }
 
 export default Utilisateur;

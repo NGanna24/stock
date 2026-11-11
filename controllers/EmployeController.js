@@ -1,6 +1,7 @@
 // controllers/EmployeController.js
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
-import Employe from '../models/Employe.js';
+import Employe, { CHAMPS_FICHE } from '../models/Employe.js';
+import { urlPhoto, supprimerPhoto } from '../middleware/uploadPhotoProfil.js';
 import Magasin from '../models/Magasin.js';
 import Utilisateur from '../models/Utilisateur.js';
 
@@ -24,11 +25,81 @@ function verifierTelephoneEmploye(brut) {
     return { ok: true, telephone: numero.number }; // forme +22670123456
 }
 
-// Un numéro sert à se connecter : il doit être unique dans tout Miyo
-async function numeroDejaPris(telephone, idEmployeExclu = null) {
-    if (await Utilisateur.findOnly(telephone)) return true;
+// Un numéro sert à se connecter : il doit être unique dans tout Miyo.
+// Renvoie null si le numéro est libre, sinon un message qui dit À QUI il appartient.
+async function numeroDejaPris(telephone, idPatron, idEmployeExclu = null) {
+    const lisible = parsePhoneNumberFromString(telephone)?.formatInternational() || telephone;
+    const patron = await Utilisateur.findOnly(telephone);
+    if (patron) {
+        return Number(patron.id_utilisateur) === Number(idPatron)
+            ? `${lisible} est votre propre numéro (celui de votre compte patron). Chaque employé doit avoir son propre numéro.`
+            : `${lisible} est déjà le numéro d'un compte patron Miyo (une autre boutique). Utilisez un autre numéro.`;
+    }
     const emp = await Employe.findByTelephone(telephone);
-    return !!emp && Number(emp.id_employe) !== Number(idEmployeExclu);
+    if (!emp || Number(emp.id_employe) === Number(idEmployeExclu)) return null;
+    return Number(emp.id_utilisateur) === Number(idPatron)
+        ? `${lisible} est déjà le numéro de votre employé ${emp.fullname}.`
+        : `${lisible} est déjà le numéro d'un employé d'une autre boutique Miyo. Utilisez un autre numéro.`;
+}
+
+// ==================== FICHE EMPLOYÉ ====================
+export const PIECES = ['cni', 'passeport', 'permis', 'attestation', 'carte_consulaire', 'autre'];
+const LONGUEURS = { adresse: 255, quartier: 100, piece_numero: 60, contact_urgence_nom: 120, contact_urgence_tel: 30, notes: 2000 };
+const estPatron = (req) => req.user?.type !== 'employe';
+
+/** Lit et vérifie les champs de fiche envoyés. Le salaire n'est accepté que du patron. */
+function lireFiche(body = {}, patron) {
+    const fiche = {};
+    for (const champ of CHAMPS_FICHE) {
+        if (body[champ] === undefined) continue;
+        if (champ === 'salaire' && !patron) continue;
+        let v = body[champ] === null ? '' : String(body[champ]).trim();
+        if (v === '') { fiche[champ] = ''; continue; }
+        if (champ === 'date_naissance' || champ === 'date_embauche') {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(new Date(v + 'T00:00:00').getTime())) {
+                return { erreur: champ === 'date_naissance' ? 'Date de naissance invalide' : "Date d'embauche invalide" };
+            }
+            const d = new Date(v + 'T00:00:00');
+            if (d > new Date()) {
+                if (champ === 'date_naissance') return { erreur: 'La date de naissance ne peut pas être dans le futur' };
+                if (d - new Date() > 366 * 86400000) return { erreur: "Date d'embauche trop éloignée" };
+            }
+            if (champ === 'date_naissance' && d.getFullYear() < 1920) return { erreur: 'Date de naissance invalide' };
+        } else if (champ === 'salaire') {
+            const n = Number(v.replace(/\s/g, '').replace(',', '.'));
+            if (!Number.isFinite(n) || n < 0 || n > 1e12) return { erreur: 'Salaire invalide' };
+            v = Math.round(n * 100) / 100;
+        } else if (champ === 'piece_type') {
+            if (!PIECES.includes(v)) return { erreur: "Type de pièce d'identité inconnu" };
+        } else if (champ === 'contact_urgence_tel') {
+            if (!/^\+?[\d\s.-]{6,20}$/.test(v)) return { erreur: "Numéro du contact d'urgence invalide" };
+        }
+        if (typeof v === 'string' && LONGUEURS[champ] && v.length > LONGUEURS[champ]) {
+            return { erreur: `Texte trop long (${LONGUEURS[champ]} caractères maximum)` };
+        }
+        fiche[champ] = v;
+    }
+    return { fiche };
+}
+
+const dateISO = (d) => {
+    if (!d) return null;
+    if (d instanceof Date) {
+        const p = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    }
+    return String(d).slice(0, 10);
+};
+
+/** Ce qu'on renvoie d'un employé : jamais le code ni les infos de sécurité ; salaire au patron seulement. */
+function presenter(emp, req) {
+    if (!emp) return emp;
+    const { password, session_version, tentatives_echouees, bloque_jusqua, ...reste } = emp;
+    if (!estPatron(req)) delete reste.salaire;
+    else if (reste.salaire != null) reste.salaire = Number(reste.salaire);
+    if ('date_naissance' in reste) reste.date_naissance = dateISO(reste.date_naissance);
+    if ('date_embauche' in reste) reste.date_embauche = dateISO(reste.date_embauche);
+    return reste;
 }
 
 class EmployeController {
@@ -43,6 +114,8 @@ class EmployeController {
         try { 
             const id_utilisateur = req.user.id_utilisateur;
             const { fullname, telephone, password, roleName, id_magasin } = req.body;
+            const { fiche, erreur: erreurFiche } = lireFiche(req.body, estPatron(req));
+            if (erreurFiche) return res.status(400).json({ success: false, message: erreurFiche });
 
             // === Validations HTTP ===
             if (!fullname || !telephone || !password || !roleName) {
@@ -92,11 +165,9 @@ class EmployeController {
                     message: 'Un employé avec ce numéro existe déjà dans votre magasin'
                 });
             }
-            if (await numeroDejaPris(cleanedTelephone)) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Ce numéro est déjà utilisé par un autre compte Miyo'
-                });
+            const dejaPris = await numeroDejaPris(cleanedTelephone, id_utilisateur);
+            if (dejaPris) {
+                return res.status(400).json({ success: false, message: dejaPris });
             }
 
             // ✅ Déterminer le magasin
@@ -129,6 +200,8 @@ class EmployeController {
                 password,
                 roleName
             });
+
+            if (Object.keys(fiche).length) await Employe.update(employeId, id_utilisateur, fiche);
 
             const newEmploye = await Employe.findByIdAndPatron(employeId, id_utilisateur);
 
@@ -170,7 +243,7 @@ class EmployeController {
             return res.status(200).json({
                 success: true,
                 count: employes.length,
-                employes
+                employes: employes.map((e) => presenter(e, req))
             });
 
         } catch (error) {
@@ -202,7 +275,7 @@ class EmployeController {
                 });
             }
 
-            return res.status(200).json({ success: true, employe });
+            return res.status(200).json({ success: true, employe: presenter(employe, req) });
 
         } catch (error) {
             console.error('❌ GetEmployeById error:', error);
@@ -224,6 +297,8 @@ static async update(req, res) {
         const { id } = req.params;
         const id_utilisateur = req.user.id_utilisateur;
         const { fullname, telephone, roleName, id_magasin, actif, password } = req.body;
+        const { fiche, erreur: erreurFiche } = lireFiche(req.body, estPatron(req));
+        if (erreurFiche) return res.status(400).json({ success: false, message: erreurFiche });
         //                                                                   ^^^^^^^^ AJOUT
 
         if (roleName === 'admin') {
@@ -248,11 +323,9 @@ static async update(req, res) {
                 return res.status(400).json({ success: false, message: tel.message });
             }
             const cleanedTelephone = telephoneNormalise = tel.telephone;
-            if (await numeroDejaPris(cleanedTelephone, id)) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Ce numéro est déjà utilisé par un autre compte Miyo'
-                });
+            const dejaPris = await numeroDejaPris(cleanedTelephone, id_utilisateur, id);
+            if (dejaPris) {
+                return res.status(400).json({ success: false, message: dejaPris });
             }
             const telExiste = await Employe.telephoneExists(
                 cleanedTelephone,
@@ -274,6 +347,7 @@ static async update(req, res) {
             id_magasin,
             actif,
             password: password || undefined,  // ✅ AJOUT
+            ...fiche,
         });
 
         if (!updated) {
@@ -288,7 +362,7 @@ static async update(req, res) {
         return res.status(200).json({
             success: true,
             message: 'Employé mis à jour avec succès',
-            employe
+            employe: presenter(employe, req)
         });
 
     } catch (error) {
@@ -383,6 +457,31 @@ static async update(req, res) {
      * GET /api/employes/stats
      * ============================================================
      */
+    /**
+     * PHOTO d'un employé (patron ou gérant)
+     * POST /api/employes/:id/photo   (champ « photo »)
+     * DELETE /api/employes/:id/photo
+     */
+    static async definirPhoto(req, res) {
+        const url = req.file ? urlPhoto(req.file.filename) : null;
+        try {
+            if (req.method === 'POST' && !req.file) {
+                return res.status(400).json({ success: false, message: 'Aucune photo reçue' });
+            }
+            const r = await Employe.definirPhoto(req.params.id, req.user.id_utilisateur, url);
+            if (!r.trouve) {
+                if (url) supprimerPhoto(url);
+                return res.status(404).json({ success: false, message: 'Employé non trouvé' });
+            }
+            if (r.ancienne && r.ancienne !== url) supprimerPhoto(r.ancienne);
+            return res.json({ success: true, photo_url: url, message: url ? 'Photo enregistrée' : 'Photo retirée' });
+        } catch (error) {
+            if (url) supprimerPhoto(url);
+            console.error('❌ PhotoEmploye error:', error);
+            return res.status(500).json({ success: false, message: "Impossible d'enregistrer la photo" });
+        }
+    }
+
     static async getStats(req, res) {
         try {
             const id_utilisateur = req.user.id_utilisateur;
@@ -398,4 +497,4 @@ static async update(req, res) {
     }
 }
 
-export default EmployeController;
+export default EmployeController;
