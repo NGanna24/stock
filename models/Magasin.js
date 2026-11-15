@@ -1,5 +1,6 @@
 // models/Magasin.js
 import { pool } from '../config/db.js';
+import { oublierIndicatif } from '../utils/telephone.js';
 
 class Magasin {
     /**
@@ -164,6 +165,7 @@ class Magasin {
 
         values.push(id_utilisateur);
 
+        oublierIndicatif(id_utilisateur); // le pays a peut-être changé
         const [result] = await pool.execute(
             `UPDATE magasins SET ${updates.join(', ')} WHERE id_utilisateur = ?`,
             values

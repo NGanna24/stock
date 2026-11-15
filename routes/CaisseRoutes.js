@@ -6,11 +6,13 @@
 // ⚠️ Routes statiques (/courante, /ouvrir, /historique) AVANT /:id
 import express from 'express';
 import CaisseController from '../controllers/CaisseController.js';
-import { requireRole } from '../middleware/roleMiddleware.js';
+import { authenticateToken } from '../middleware/middleware.js';
+import { exigeAction } from '../utils/permissions.js';
 
 const router = express.Router();
-const equipe = requireRole('admin', 'manager', 'caissier');
-const responsables = requireRole('admin', 'manager');
+// Accès aux pages : selon les permissions du rôle (utils/permissions.js, controleAcces)
+const equipe = authenticateToken;
+const responsables = exigeAction('caisse.historique');
 
 router.get('/courante', equipe, CaisseController.courante);
 router.post('/ouvrir', equipe, CaisseController.ouvrir);

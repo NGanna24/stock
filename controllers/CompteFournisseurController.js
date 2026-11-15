@@ -12,11 +12,8 @@ const auteur = (req) => ({
     nom: req.user?.fullname || null,
 });
 
-export const accesComptesFournisseurs = (req, res, next) => {
-    if (req.user?.type !== 'employe') return next();
-    if (String(req.user?.role || '').toLowerCase() === 'manager') return next();
-    return res.status(403).json({ success: false, message: 'Réservé au patron et aux gérants' });
-};
+// Accès : page « Comptes fournisseurs » réglée par le propriétaire (vérifiée par controleAcces)
+export const accesComptesFournisseurs = (req, res, next) => next();
 
 const erreur = (res, e, ou, fichier) => {
     if (fichier) supprimerJustificatif(fichier);
@@ -112,6 +109,17 @@ class CompteFournisseurController {
             res.setHeader('Cache-Control', 'private, no-store');
             fs.createReadStream(chemin).pipe(res);
         } catch (e) { erreur(res, e, 'justificatif'); }
+    }
+
+    /** POST /operations/:id/justificatif ou /versements/:id/justificatif : joindre ou remplacer le reçu */
+    static async joindreJustificatif(req, res) {
+        const fichier = req.file?.filename || null;
+        try {
+            const source = req.params.source === 'versements' ? 'versement' : 'operation';
+            const r = await CompteFournisseur.joindreJustificatif(espace(req), source, idParam(req.params.id), fichier);
+            r.aSupprimer.forEach((n) => supprimerJustificatif(n));
+            res.json({ success: true, message: r.remplace ? 'Reçu remplacé' : 'Reçu ajouté' });
+        } catch (e) { erreur(res, e, 'joindreJustificatif', fichier); }
     }
 
     static async rapprochements(req, res) {

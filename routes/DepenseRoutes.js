@@ -23,7 +23,8 @@ const roles = (...autorises) => (req, res, next) => {
     });
 };
 
-const lecture = [authenticateToken, roles('admin', 'manager')];
+// Accès à la page Dépenses : selon les permissions du rôle (utils/permissions.js, controleAcces)
+const lecture = [authenticateToken];
 const admin = [authenticateToken, roles('admin')];
 
 // Catégories

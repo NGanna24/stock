@@ -3,6 +3,7 @@ import { pool } from '../config/db.js';
 import { prochainNumero, prefixeDuMois, estDoublonNumero, attendreUnPeu } from '../utils/numerotation.js';
 import MouvementStock from './MouvementStock.js';
 import Client from './Client.js';
+import { analyserTelephone, formaterTelephone, indicatifDuMagasin } from '../utils/telephone.js';
 
 // Refus « normal » (règle de gestion) : le contrôleur renvoie ce statut HTTP et ce message tel quel.
 const erreurMetier = (message, status = 400, code = null) =>
@@ -50,7 +51,8 @@ class CommandeVente {
 
             const {
                 nomclient = null,
-                telephone = null,
+                telephone: telephoneSaisi = null,
+                indicatif: indicatifChoisi = null,
                 date_commande,
                 notes,
                 id_utilisateur,
@@ -165,8 +167,18 @@ class CommandeVente {
             // Numéro = plus grand du mois + 1. Si deux ventes sont validées au même instant,
             // la seconde reçoit « doublon » : on reprend simplement le numéro suivant.
             // Fiche client : retrouvée (ou créée) d'après le client choisi ou le téléphone saisi
+            // Téléphone : vérifié selon le pays (celui choisi, sinon celui du magasin) et gardé
+            // sous une seule forme lisible « +225 07 07 08 09 10 »
+            let telephone = null;
+            let indicatif = null;
+            if (telephoneSaisi && String(telephoneSaisi).trim()) {
+                indicatif = String(indicatifChoisi || '').replace(/\D/g, '') || await indicatifDuMagasin(id_utilisateur, connection);
+                const a = analyserTelephone(telephoneSaisi, indicatif);
+                if (a.erreur) throw erreurMetier(`Téléphone du client : ${a.erreur}`, 400, 'TELEPHONE_INVALIDE');
+                telephone = formaterTelephone(telephoneSaisi, indicatif);
+            }
             const fiche = await Client.rattacherVente(connection, id_utilisateur, {
-                id_client: data.id_client || null, nomclient, telephone,
+                id_client: data.id_client || null, nomclient, telephone, indicatif,
             });
             const nomVente = nomclient || fiche?.nom || null;
             const telVente = telephone || fiche?.telephone || null;
@@ -938,6 +950,7 @@ await connection.execute(
                      FROM paiements p
                      JOIN factures_vente f ON f.id_facture = p.id_facture
                      WHERE f.id_commande = ? AND p.id_utilisateur = ?
+                       AND p.mode_paiement <> 'avoir'   -- part de retour déduite : rien à rendre
                      GROUP BY p.id_facture, p.mode_paiement
                      HAVING SUM(p.montant) > 0.009`,
                     [id, id_utilisateur]
@@ -1079,13 +1092,13 @@ static async searchClientsHistorique(query, id_utilisateur, limit = 10) {
            AND statut != 'annulee'
            AND nomclient IS NOT NULL
            AND nomclient != ''
-           AND (nomclient LIKE ? OR telephone LIKE ?)
+           AND (nomclient LIKE ? OR telephone LIKE ? OR REPLACE(REPLACE(telephone, ' ', ''), '+', '') LIKE ?)
          GROUP BY nomclient, telephone
          ORDER BY
             derniere_vente DESC,
             nb_commandes DESC
          LIMIT ${safeLimit}`,
-        [id_utilisateur, like, like]
+        [id_utilisateur, like, like, `%${trimmed.replace(/\D/g, '') || trimmed}%`]
     );
 
     return rows.map((r) => ({

@@ -651,6 +651,61 @@ class CompteFournisseur {
         return g[0]?.justificatif || null;
     }
 
+    /**
+     * Joindre (ou remplacer) le reçu d'une ligne déjà enregistrée.
+     * Renvoie les anciens fichiers qui ne servent plus, à supprimer après coup.
+     */
+    static async joindreJustificatif(idUtilisateur, source, id, fichier) {
+        if (!fichier) throw fail('Choisissez la photo du reçu ou un PDF.', 400);
+        const conn = await pool.getConnection();
+        try {
+            await conn.beginTransaction();
+            let anciens = [];
+            if (source === 'versement') {
+                const [[p]] = await conn.query(
+                    'SELECT id_paiement_fournisseur, groupe, annule FROM paiements_fournisseurs WHERE id_paiement_fournisseur = ? AND id_utilisateur = ? FOR UPDATE',
+                    [id, idUtilisateur]);
+                if (!p) throw fail('Versement introuvable', 404);
+                if (p.annule) throw fail('Ce versement est annulé : on ne peut plus y joindre de reçu.', 400);
+                // Un versement réparti sur plusieurs commandes partage le même reçu
+                const [lignes] = await conn.query(
+                    `SELECT id_paiement_fournisseur, justificatif FROM paiements_fournisseurs
+                      WHERE id_utilisateur = ? AND (id_paiement_fournisseur = ? OR (groupe IS NOT NULL AND groupe = ?))`,
+                    [idUtilisateur, id, p.groupe]);
+                anciens = lignes.map((l) => l.justificatif).filter(Boolean);
+                await conn.query(
+                    `UPDATE paiements_fournisseurs SET justificatif = ? WHERE id_utilisateur = ? AND id_paiement_fournisseur IN (?)`,
+                    [fichier, idUtilisateur, lignes.map((l) => l.id_paiement_fournisseur)]);
+            } else {
+                const [[o]] = await conn.query(
+                    `SELECT o.id_operation, o.type, o.annulee, o.justificatif FROM operations_compte_fournisseur o
+                       JOIN comptes_fournisseurs c ON c.id_compte = o.id_compte
+                      WHERE o.id_operation = ? AND c.id_utilisateur = ? FOR UPDATE`,
+                    [id, idUtilisateur]);
+                if (!o) throw fail('Opération introuvable', 404);
+                if (o.annulee) throw fail('Cette opération est annulée : on ne peut plus y joindre de reçu.', 400);
+                if (o.type === 'plafond') throw fail('Un changement de plafond ne prend pas de reçu.', 400);
+                anciens = o.justificatif ? [o.justificatif] : [];
+                await conn.query('UPDATE operations_compte_fournisseur SET justificatif = ? WHERE id_operation = ?', [fichier, id]);
+            }
+            await conn.commit();
+            // Ne supprimer un ancien fichier que s'il n'est plus utilisé nulle part
+            const aSupprimer = [];
+            for (const nom of [...new Set(anciens)].filter((n) => n !== fichier)) {
+                const [[u]] = await pool.query(
+                    `SELECT (SELECT COUNT(*) FROM paiements_fournisseurs WHERE justificatif = ?)
+                          + (SELECT COUNT(*) FROM operations_compte_fournisseur WHERE justificatif = ?) AS n`, [nom, nom]);
+                if (!Number(u.n)) aSupprimer.push(nom);
+            }
+            return { remplace: anciens.length > 0, aSupprimer };
+        } catch (e) {
+            await conn.rollback();
+            throw e;
+        } finally {
+            conn.release();
+        }
+    }
+
     /* ---------------- Rapprochements ---------------- */
 
     static async rapprochements(idUtilisateur, idCompte) {

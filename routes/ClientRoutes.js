@@ -5,12 +5,16 @@
 // ⚠️ Routes statiques AVANT les routes paramétrées
 import express from 'express';
 import ClientController from '../controllers/ClientController.js';
-import { requireRole } from '../middleware/roleMiddleware.js';
+import { authenticateToken } from '../middleware/middleware.js';
+import { exigeAction } from '../utils/permissions.js';
 
 const router = express.Router();
-const equipe = requireRole('admin', 'manager', 'caissier');
-const responsables = requireRole('admin', 'manager');
+// Accès aux pages : selon les permissions du rôle (utils/permissions.js, controleAcces)
+const equipe = authenticateToken;
+const responsables = exigeAction('clients.credit');
 
+// Pays du magasin pour la saisie des numéros (toute l'équipe, vendeurs compris)
+router.get('/indicatif', ClientController.indicatif);
 router.get('/stats', equipe, ClientController.getStats);
 router.get('/top', equipe, ClientController.getTopClients);
 router.get('/search', equipe, ClientController.searchClients);

@@ -45,6 +45,7 @@ const MODULES = {
     utilisateur: ['Compte', 'le compte'],
     entrepots: ['Entrepôts', 'un entrepôt'],
     transferts: ['Transferts', 'un transfert'],
+    permissions: ['Rôles et permissions', 'les permissions d\'un rôle'],
 };
 
 // Sous-ressources des entrepôts : /entrepots/:id/<sous-ressource>

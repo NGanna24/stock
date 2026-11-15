@@ -1,10 +1,10 @@
 // controllers/CommandeVenteController.js
+import { peut } from '../utils/permissions.js';
 import CommandeVente from '../models/CommandeVente.js';
 
 import Produit from '../models/Produit.js';
 
-// Annuler une vente déjà encaissée fait sortir de l'argent : réservé à ces rôles
-const PEUVENT_REMBOURSER = ['admin', 'manager'];
+// Annuler une vente déjà encaissée fait sortir de l'argent : action réglée par le propriétaire
 
 class CommandeVenteController {
     /**
@@ -17,6 +17,7 @@ class CommandeVenteController {
             const {
                 nomclient = null,
                 telephone = null,
+                indicatif = null,
                 id_client = null,
                 date_commande,
                 notes,
@@ -112,6 +113,7 @@ class CommandeVenteController {
             const commande = await CommandeVente.create({
                 nomclient: nomclient || null,
                 telephone: telephone || null,
+                indicatif: indicatif || null,
                 id_client: parseInt(id_client, 10) || null,
                 date_commande,
                 notes: notes || null,
@@ -128,6 +130,9 @@ class CommandeVenteController {
             });
 
         } catch (error) {
+            if (error.code === 'TELEPHONE_INVALIDE') {
+                return res.status(400).json({ success: false, message: error.message, code: error.code });
+            }
             console.error('❌ Create commande vente error:', error);
             return res.status(500).json({
                 success: false,
@@ -332,6 +337,13 @@ class CommandeVenteController {
             // refusée si la vente est déjà encaissée. Avant, seul le libellé changeait
             // et les articles vendus ne revenaient jamais en stock.
             if (statut === 'annulee') {
+                if (!peut(req, 'ventes.annuler')) {
+                    return res.status(403).json({
+                        success: false,
+                        code: 'PERMISSION_REFUSEE',
+                        message: 'Action non autorisée pour votre rôle : annuler une vente. Demandez au propriétaire.'
+                    });
+                }
                 return CommandeVenteController.annuler(req, res);
             }
 
@@ -436,7 +448,7 @@ class CommandeVenteController {
             const { id } = req.params;
 
             const { rembourse } = await CommandeVente.annuler(id, req.workspaceId, {
-                peutRembourser: PEUVENT_REMBOURSER.includes(req.user?.role)
+                peutRembourser: peut(req, 'ventes.rembourser')
             });
             const fcfa = (n) => `${Math.round(n).toLocaleString('fr-FR').replace(/\u202f|\u00a0/g, ' ')} FCFA`;
 

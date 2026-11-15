@@ -8,7 +8,7 @@
 //   - « doit » = factures non annulées − ce qui a été payé dessus ;
 //   - plafond de crédit facultatif ; relevé de compte ; fusion de deux fiches en double.
 import { pool } from '../config/db.js';
-import normaliserTelephone from '../utils/telephone.js';
+import normaliserTelephone, { analyserTelephone, formaterTelephone, indicatifDuMagasin } from '../utils/telephone.js';
 import { attribuerCodeClient } from '../config/migrations.js';
 
 const TYPES = ['particulier', 'revendeur', 'entreprise'];
@@ -94,7 +94,7 @@ class Client {
         if (filters.search && String(filters.search).trim()) {
             const s = String(filters.search).trim();
             const t = `%${s}%`;
-            const norme = normaliserTelephone(s);
+            const norme = normaliserTelephone(s, await indicatifDuMagasin(id_utilisateur));
             where.push(`(c.nom LIKE ? OR c.telephone LIKE ? OR c.telephone2 LIKE ? OR c.quartier LIKE ? OR c.ville LIKE ?
                          OR c.code_client LIKE ?
                          ${norme ? 'OR c.telephone_normalise = ? OR c.telephone2_normalise = ?' : ''})`);
@@ -180,7 +180,7 @@ class Client {
             [rows] = await pool.query('SELECT id_client, fusionne_dans FROM clients WHERE id_client = ? AND id_utilisateur = ?', [Number(brut), id_utilisateur]);
         }
         if (!rows.length) {
-            const norme = normaliserTelephone(brut);
+            const norme = normaliserTelephone(brut, await indicatifDuMagasin(id_utilisateur));
             if (norme) {
                 [rows] = await pool.query(
                     `SELECT id_client, fusionne_dans FROM clients
@@ -289,7 +289,7 @@ class Client {
     // ============================================================
     // CRÉATION / MODIFICATION
     // ============================================================
-    static _champs(data, { peutFixerPlafond }) {
+    static _champs(data, { peutFixerPlafond, indicatif }) {
         const c = {};
         if (data.nom !== undefined) {
             const n = texte(data.nom, 200);
@@ -306,11 +306,12 @@ class Client {
         if (c.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c.email)) throw erreur('Adresse e-mail invalide');
         for (const [k, kn] of [['telephone', 'telephone_normalise'], ['telephone2', 'telephone2_normalise']]) {
             if (data[k] !== undefined) {
-                const t = texte(data[k], k === 'telephone' ? 20 : 30);
-                const n = t ? normaliserTelephone(t) : null;
-                if (t && !n) throw erreur(`Numéro de téléphone invalide : ${t}`);
-                c[k] = t;
-                c[kn] = n;
+                const brut = texte(data[k], 40);
+                const a = brut ? analyserTelephone(brut, indicatif) : null;
+                if (a && a.erreur) throw erreur(`${a.erreur} (${brut})`);
+                // Gardé sous une seule forme lisible : « +225 07 07 08 09 10 »
+                c[k] = brut ? formaterTelephone(brut, indicatif).slice(0, k === 'telephone' ? 20 : 30) : null;
+                c[kn] = a ? a.norme : null;
             }
         }
         if (data.plafond_credit !== undefined && peutFixerPlafond) {
@@ -341,7 +342,8 @@ class Client {
 
     static async create(data, id_utilisateur, { peutFixerPlafond = false } = {}) {
         if (!texte(data.nom, 200)) throw erreur('Le nom du client est obligatoire');
-        const c = Client._champs({ type_client: 'particulier', ...data }, { peutFixerPlafond });
+        const indicatif = data.indicatif || await indicatifDuMagasin(id_utilisateur);
+        const c = Client._champs({ type_client: 'particulier', ...data }, { peutFixerPlafond, indicatif });
         const doublon = await Client._doublon(id_utilisateur, [c.telephone_normalise, c.telephone2_normalise]);
         if (doublon) throw Object.assign(erreur(`Ce numéro appartient déjà au client « ${doublon.nom} »`, 409), { id_client_existant: doublon.id_client });
         const cols = Object.keys(c);
@@ -356,7 +358,8 @@ class Client {
     static async update(id_client, data, id_utilisateur, { peutFixerPlafond = false } = {}) {
         const existant = await Client.findById(id_client, id_utilisateur);
         if (!existant) throw erreur('Client introuvable', 404);
-        const c = Client._champs(data, { peutFixerPlafond });
+        const indicatif = data.indicatif || await indicatifDuMagasin(id_utilisateur);
+        const c = Client._champs(data, { peutFixerPlafond, indicatif });
         const doublon = await Client._doublon(id_utilisateur, [c.telephone_normalise, c.telephone2_normalise], id_client);
         if (doublon) throw Object.assign(erreur(`Ce numéro appartient déjà au client « ${doublon.nom} »`, 409), { id_client_existant: doublon.id_client });
         const cols = Object.keys(c);
@@ -490,17 +493,18 @@ class Client {
      * Trouve (ou crée) la fiche du client d'une vente. db = connexion de la transaction de la vente.
      * → { id_client, nom, telephone } ou null (vente sans client identifiable).
      */
-    static async rattacherVente(db, id_utilisateur, { id_client, nomclient, telephone }) {
+    static async rattacherVente(db, id_utilisateur, { id_client, nomclient, telephone, indicatif }) {
         if (id_client) {
             const [rows] = await db.query(
                 'SELECT id_client, nom, telephone, fusionne_dans FROM clients WHERE id_client = ? AND id_utilisateur = ?',
                 [id_client, id_utilisateur]
             );
             if (!rows[0]) throw erreur('Client introuvable');
-            if (rows[0].fusionne_dans) return Client.rattacherVente(db, id_utilisateur, { id_client: rows[0].fusionne_dans, nomclient, telephone });
+            if (rows[0].fusionne_dans) return Client.rattacherVente(db, id_utilisateur, { id_client: rows[0].fusionne_dans, nomclient, telephone, indicatif });
             return { id_client: rows[0].id_client, nom: rows[0].nom, telephone: rows[0].telephone };
         }
-        const norme = normaliserTelephone(telephone);
+        const ind = indicatif || await indicatifDuMagasin(id_utilisateur, db);
+        const norme = normaliserTelephone(telephone, ind);
         if (!norme) return null;
         const [trouves] = await db.query(
             `SELECT id_client, nom, telephone, fusionne_dans FROM clients
@@ -515,7 +519,7 @@ class Client {
         const nom = texte(nomclient, 200) || 'Client';
         const [r] = await db.query(
             'INSERT INTO clients (id_utilisateur, nom, telephone, telephone_normalise) VALUES (?, ?, ?, ?)',
-            [id_utilisateur, nom, String(telephone).trim().slice(0, 20), norme]
+            [id_utilisateur, nom, formaterTelephone(telephone, ind).slice(0, 20), norme]
         );
         await attribuerCodeClient(db, r.insertId, id_utilisateur);
         return { id_client: r.insertId, nom, telephone: String(telephone).trim() };

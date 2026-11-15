@@ -38,7 +38,8 @@ class Recette {
     static async findAll(id_utilisateur, filters = {}) {
         if (!id_utilisateur) throw new Error('id_utilisateur requis pour findAll');
 
-        const conditions = ['pa.id_utilisateur = ?'];
+        // Une part de retour déduite de la facture (« avoir ») n'est pas de l'argent reçu
+        const conditions = ['pa.id_utilisateur = ?', "pa.mode_paiement <> 'avoir'"];
         const params = [id_utilisateur];
 
         if (filters.dateDebut) { conditions.push('pa.date_paiement >= ?'); params.push(filters.dateDebut); }
@@ -248,13 +249,13 @@ class Recette {
         try {
             await connection.beginTransaction();
             const [rows] = await connection.query(
-                'SELECT id_paiement, id_facture, montant FROM paiements WHERE id_paiement = ? AND id_utilisateur = ? FOR UPDATE',
+                'SELECT id_paiement, id_facture, montant, mode_paiement FROM paiements WHERE id_paiement = ? AND id_utilisateur = ? FOR UPDATE',
                 [id, id_utilisateur]
             );
             const p = rows[0];
             if (!p) throw erreur('Recette non trouvée', 404);
-            if (num(p.montant) < 0) {
-                throw erreur('Ceci est un remboursement lié à un retour client : il ne peut pas être supprimé depuis les recettes');
+            if (num(p.montant) < 0 || p.mode_paiement === 'avoir') {
+                throw erreur('Cette ligne est liée à un retour client : elle se gère depuis le retour, pas d\'ici');
             }
 
             await connection.execute('DELETE FROM paiements WHERE id_paiement = ? AND id_utilisateur = ?', [id, id_utilisateur]);

@@ -1,7 +1,9 @@
 // controllers/SuperAdminController.js
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import JournalSuperAdmin from '../models/JournalSuperAdmin.js';
 import SuperAdmin from '../models/SuperAdmin.js';
+import { pool } from '../config/db.js';
 
 const JWT_SECRET = process.env.JWT_SUPER_ADMIN_SECRET;
 const TOKEN_EXPIRES = '8h';
@@ -128,7 +130,13 @@ class SuperAdminController {
             }
 
             const sa = await SuperAdmin.findByIdentifiant(identifiant.trim());
+            const trace = (action, libelle, compte = sa) => JournalSuperAdmin.noter({
+                id_super_admin: compte?.id_super_admin || null,
+                acteur_nom: compte?.fullname || String(identifiant).trim().slice(0, 120),
+                action, libelle, ip: req.ip, user_agent: req.headers['user-agent'],
+            });
             if (!sa) {
+                trace('echec_connexion', 'Connexion refusée : identifiant inconnu', null);
                 return res.status(401).json({
                     success: false,
                     message: 'Identifiants incorrects',
@@ -144,6 +152,7 @@ class SuperAdminController {
 
             if (sa.bloque_jusqua && new Date(sa.bloque_jusqua) > new Date()) {
                 const minutes = Math.ceil((new Date(sa.bloque_jusqua) - new Date()) / 60000);
+                trace('echec_connexion', 'Connexion refusée : compte bloqué');
                 return res.status(429).json({
                     success: false,
                     message: `Compte bloqué. Réessaie dans ${minutes} min.`,
@@ -155,11 +164,13 @@ class SuperAdminController {
                 await SuperAdmin.updateLoginFailure(sa.id_super_admin);
                 const attempts = sa.tentatives_echouees + 1;
                 if (attempts >= MAX_ATTEMPTS) {
+                    trace('blocage', `Compte bloqué ${BLOCK_DURATION_MIN} min après ${attempts} codes faux`);
                     return res.status(429).json({
                         success: false,
                         message: `Trop de tentatives. Compte bloqué ${BLOCK_DURATION_MIN} min.`,
                     });
                 }
+                trace('echec_connexion', `Mot de passe faux (${attempts}/${MAX_ATTEMPTS})`);
                 return res.status(401).json({
                     success: false,
                     message: `Identifiants incorrects (${MAX_ATTEMPTS - attempts} essai(s) restant(s))`,
@@ -168,6 +179,7 @@ class SuperAdminController {
 
             const ip = req.ip || req.connection.remoteAddress;
             await SuperAdmin.updateLoginSuccess(sa.id_super_admin, ip);
+            trace('connexion', 'Connexion à la console');
 
             const token = jwt.sign(
                 {
@@ -208,6 +220,22 @@ class SuperAdminController {
             return res.json({ success: true, superAdmin: sa });
         } catch (error) {
             console.error('❌ SuperAdminController.me:', error);
+            return res.status(500).json({ success: false, message: 'Erreur serveur' });
+        }
+    }
+
+    // ============================================================
+    // PROFIL : modifier le nom affiché du compte
+    // ============================================================
+    static async profil(req, res) {
+        try {
+            const nom = String(req.body?.fullname || '').trim().slice(0, 100);
+            if (nom.length < 2) return res.status(400).json({ success: false, message: 'Le nom doit faire au moins 2 caractères' });
+            await pool.query('UPDATE super_admins SET fullname = ? WHERE id_super_admin = ?', [nom, req.superAdmin.id_super_admin]);
+            const sa = await SuperAdmin.findById(req.superAdmin.id_super_admin);
+            return res.json({ success: true, message: 'Nom modifié', superAdmin: sa });
+        } catch (error) {
+            console.error('SuperAdminController.profil:', error);
             return res.status(500).json({ success: false, message: 'Erreur serveur' });
         }
     }

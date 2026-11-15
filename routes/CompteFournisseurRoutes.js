@@ -14,6 +14,8 @@ router.post('/operations/:idOperation/annuler', C.annuler);
 router.post('/versements/:idPaiement/annuler', C.annulerVersement);
 router.get('/operations/:id/justificatif', (req, res) => { req.params.source = 'operations'; return C.justificatif(req, res); });
 router.get('/versements/:id/justificatif', (req, res) => { req.params.source = 'versements'; return C.justificatif(req, res); });
+router.post('/operations/:id/justificatif', uploadJustificatif, (req, res) => { req.params.source = 'operations'; return C.joindreJustificatif(req, res); });
+router.post('/versements/:id/justificatif', uploadJustificatif, (req, res) => { req.params.source = 'versements'; return C.joindreJustificatif(req, res); });
 router.get('/par-fournisseur/:idFournisseur', C.parFournisseur);
 router.put('/rapprochements/:idRappro/resoudre', C.resoudre);
 

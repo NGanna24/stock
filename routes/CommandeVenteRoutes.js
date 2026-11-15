@@ -2,6 +2,7 @@
 import express from 'express';
 import CommandeVenteController from '../controllers/CommandeVenteController.js';
 import { authenticateToken } from '../middleware/middleware.js';
+import { exigeAction } from '../utils/permissions.js';
 
 const router = express.Router();
 
@@ -19,7 +20,7 @@ router.get('/telephone/:telephone', authenticateToken, CommandeVenteController.g
 router.get('/statut/:statut', authenticateToken, CommandeVenteController.getByStatut);
 
 // ==================== ROUTE ANNULATION ==================== 
-router.patch('/:id/annuler', authenticateToken, CommandeVenteController.annuler);
+router.patch('/:id/annuler', authenticateToken, exigeAction('ventes.annuler'), CommandeVenteController.annuler);
 
 // ==================== ROUTE STATUT ====================
 router.patch('/:id/statut', authenticateToken, CommandeVenteController.updateStatut);
@@ -35,6 +36,6 @@ router.get('/search-clients', authenticateToken, CommandeVenteController.searchC
 router.get('/', authenticateToken, CommandeVenteController.getAll);
 router.get('/:id', authenticateToken, CommandeVenteController.getById);
 router.post('/', authenticateToken, CommandeVenteController.create);
-router.delete('/:id', authenticateToken, CommandeVenteController.delete);
+router.delete('/:id', authenticateToken, exigeAction('ventes.annuler'), CommandeVenteController.delete);
 
 export default router;

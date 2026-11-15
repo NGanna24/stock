@@ -20,6 +20,12 @@ class Paiement {
                        cv.numero_commande,
                        cv.nomclient,
                        cv.telephone,
+                       (SELECT COUNT(*) FROM paiements p2
+                         WHERE p2.id_utilisateur = p.id_utilisateur AND p2.id_facture = p.id_facture AND p2.montant > 0 AND p2.mode_paiement <> 'avoir'
+                           AND (p2.date_paiement < p.date_paiement
+                                OR (p2.date_paiement = p.date_paiement AND p2.id_paiement <= p.id_paiement))) AS rang_reglement,
+                       (SELECT COUNT(*) FROM paiements p3
+                         WHERE p3.id_utilisateur = p.id_utilisateur AND p3.id_facture = p.id_facture AND p3.montant > 0 AND p3.mode_paiement <> 'avoir') AS nb_reglements,
                        u.fullname as utilisateur_nom,
                        DATE_FORMAT(p.date_paiement, '%d/%m/%Y') as date_paiement_formatee
                 FROM paiements p
@@ -27,6 +33,7 @@ class Paiement {
                 LEFT JOIN commandes_vente cv ON fv.id_commande = cv.id_commande
                 LEFT JOIN utilisateurs u ON p.id_utilisateur = u.id_utilisateur
                 WHERE p.id_utilisateur = ?              -- ✅ ISOLATION
+                  AND p.mode_paiement <> 'avoir'         -- part de retour déduite : pas un encaissement
             `;
             const params = [id_utilisateur];
 
@@ -34,9 +41,10 @@ class Paiement {
                 query += ` AND (cv.nomclient LIKE ?
                             OR cv.telephone LIKE ?
                             OR cv.numero_commande LIKE ?
-                            OR fv.numero_facture LIKE ?)`;
+                            OR fv.numero_facture LIKE ?
+                            OR p.reference LIKE ?)`;
                 const s = `%${filters.search}%`;
-                params.push(s, s, s, s);
+                params.push(s, s, s, s, s);
             }
 
             if (filters.id_facture) {
@@ -112,6 +120,12 @@ class Paiement {
                         cv.numero_commande,
                         cv.nomclient,
                         cv.telephone,
+                        (SELECT COUNT(*) FROM paiements p2
+                          WHERE p2.id_utilisateur = p.id_utilisateur AND p2.id_facture = p.id_facture AND p2.montant > 0 AND p2.mode_paiement <> 'avoir'
+                            AND (p2.date_paiement < p.date_paiement
+                                 OR (p2.date_paiement = p.date_paiement AND p2.id_paiement <= p.id_paiement))) AS rang_reglement,
+                        (SELECT COUNT(*) FROM paiements p3
+                          WHERE p3.id_utilisateur = p.id_utilisateur AND p3.id_facture = p.id_facture AND p3.montant > 0 AND p3.mode_paiement <> 'avoir') AS nb_reglements,
                         u.fullname as utilisateur_nom,
                         DATE_FORMAT(p.date_paiement, '%d/%m/%Y') as date_paiement_formatee
                  FROM paiements p
@@ -349,7 +363,7 @@ class Paiement {
 
             // ✅ Récupérer le paiement DANS le workspace
             const [paiementRows] = await connection.execute(
-                `SELECT id_facture, montant
+                `SELECT id_facture, montant, mode_paiement, reference
                  FROM paiements
                  WHERE id_paiement = ? AND id_utilisateur = ?`,
                 [id, id_utilisateur]
@@ -357,6 +371,9 @@ class Paiement {
 
             if (paiementRows.length === 0) {
                 throw new Error('Paiement non trouvé');
+            }
+            if (paiementRows[0].mode_paiement === 'avoir') {
+                throw new Error('Cette ligne vient d\'un retour client : annulez le retour pour la retirer');
             }
 
             const id_facture = paiementRows[0].id_facture;
@@ -432,14 +449,14 @@ class Paiement {
                     COALESCE(SUM(CASE WHEN DATE(date_paiement) = CURDATE() THEN montant ELSE 0 END), 0) as montant_aujourdhui,
                     COUNT(CASE WHEN DATE(date_paiement) = CURDATE() THEN 1 END) as paiements_aujourdhui
                  FROM paiements
-                 WHERE id_utilisateur = ?`,             // ✅ ISOLATION
+                 WHERE id_utilisateur = ? AND mode_paiement <> 'avoir'`,             // ✅ ISOLATION
                 [id_utilisateur]
             );
 
             const stats = rows[0];
             const [parModeRows] = await pool.execute(
                 `SELECT mode_paiement, COUNT(*) AS nombre, COALESCE(SUM(montant), 0) AS total
-                 FROM paiements WHERE id_utilisateur = ? GROUP BY mode_paiement ORDER BY total DESC`,
+                 FROM paiements WHERE id_utilisateur = ? AND mode_paiement <> 'avoir' GROUP BY mode_paiement ORDER BY total DESC`,
                 [id_utilisateur]
             );
             return {
@@ -492,4 +509,4 @@ class Paiement {
     }
 }
 
-export default Paiement;
+export default Paiement;

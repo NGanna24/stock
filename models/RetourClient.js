@@ -45,6 +45,9 @@ class RetourClient {
                 cv.statut,
                 fv.id_facture,
                 fv.numero_facture,
+                fv.montant_total AS montant_facture,
+                (SELECT COALESCE(SUM(p.montant), 0) FROM paiements p
+                  WHERE p.id_facture = fv.id_facture AND p.id_utilisateur = cv.id_utilisateur) AS total_regle,
                 COUNT(DISTINCT lcv.id_ligne_vente) AS nb_lignes,
                 COALESCE(SUM(lcv.quantite_totale_base), 0) AS total_unites_base,
                 COALESCE(SUM(lcv.quantite_retournee_base), 0) AS total_retourne_base
@@ -73,7 +76,9 @@ class RetourClient {
             total_unites_base: parseFloat(r.total_unites_base) || 0,
             total_retourne_base: parseFloat(r.total_retourne_base) || 0,
             reste_a_retourner: (parseFloat(r.total_unites_base) || 0) - (parseFloat(r.total_retourne_base) || 0),
-            montant_total: parseFloat(r.montant_total) || 0
+            montant_total: parseFloat(r.montant_total) || 0,
+            // Ce que le client doit encore sur la facture (un retour l'annule d'abord)
+            reste_du: r.id_facture ? Math.max(0, Math.round(((parseFloat(r.montant_facture) || 0) - (parseFloat(r.total_regle) || 0)) * 100) / 100) : 0,
         }));
     }
 
@@ -234,6 +239,38 @@ class RetourClient {
             );
 
             // ============================================================
+            // 4b. RÉPARTITION : d'abord ce que le client doit encore, puis les espèces
+            //     Ex : facture 147 500, payé 100 000, retour 70 000
+            //       -> la facture ne vaut plus que 77 500 : 22 500 lui sont rendus.
+            //     Ex : facture 147 500, rien payé, retour 76 500
+            //       -> il ne doit plus que 71 000, aucune espèce rendue.
+            // ============================================================
+            let deduit = 0;
+            let especes = 0;
+            if (commande.id_facture && ['remboursement_especes', 'avoir'].includes(type_resolution)) {
+                const [[fac]] = await connection.execute(
+                    'SELECT montant_total FROM factures_vente WHERE id_facture = ? AND id_utilisateur = ? FOR UPDATE',
+                    [commande.id_facture, id_utilisateur]
+                );
+                const [[reg]] = await connection.execute(
+                    'SELECT COALESCE(SUM(montant), 0) AS regle FROM paiements WHERE id_facture = ? AND id_utilisateur = ?',
+                    [commande.id_facture, id_utilisateur]
+                );
+                const r2 = (n) => Math.round(n * 100) / 100;
+                const resteDu = Math.max(0, r2((parseFloat(fac?.montant_total) || 0) - (parseFloat(reg.regle) || 0)));
+                if (type_resolution === 'remboursement_especes') {
+                    // Toute la valeur rapportée est retirée de la facture ; ce qui avait été payé en trop est rendu
+                    deduit = r2(montantTotal);
+                    especes = r2(Math.max(0, montantTotal - resteDu));
+                } else {
+                    // Type « avoir » : on n'annule que la dette, le surplus reste un avoir chez le commerçant
+                    deduit = r2(Math.min(montantTotal, resteDu));
+                    especes = 0;
+                }
+            }
+            const statutRetour = especes > 0.009 ? 'rembourse' : 'accepte';
+
+            // ============================================================
             // 5. GÉNÉRER LE NUMÉRO DE RETOUR
             // ============================================================
             const numero_retour = await this.genererNumero(id_utilisateur, connection);
@@ -248,7 +285,7 @@ class RetourClient {
                     nomclient, telephone,
                     statut, motif_retour, type_resolution,
                     montant_total, notes
-                ) VALUES (?, ?, CURDATE(), ?, ?, ?, ?, 'accepte', ?, ?, ?, ?)`,
+                ) VALUES (?, ?, CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     id_utilisateur,
                     numero_retour,
@@ -256,6 +293,7 @@ class RetourClient {
                     commande.id_facture || null,
                     commande.nomclient,
                     commande.telephone,
+                    statutRetour,
                     motif_retour,
                     type_resolution,
                     montantTotal,
@@ -350,22 +388,45 @@ class RetourClient {
             }
 
             // ============================================================
-            // 8. CRÉER LE REMBOURSEMENT (paiement négatif)
+            // 8. RÈGLEMENT DU RETOUR
+            //    - la part qui annule la dette : ligne « avoir » (pas d'argent qui bouge)
+            //    - la part payée en trop : remboursement en espèces (paiement négatif)
             // ============================================================
-            if (type_resolution === 'remboursement_especes' && commande.id_facture) {
+            if (commande.id_facture && deduit > 0.009) {
+                await connection.execute(
+                    `INSERT INTO paiements (
+                        id_utilisateur, id_facture, date_paiement,
+                        montant, mode_paiement, note, reference
+                    ) VALUES (?, ?, CURDATE(), ?, 'avoir', ?, ?)`,
+                    [id_utilisateur, commande.id_facture, deduit, `Retour ${numero_retour} déduit de la facture`, numero_retour]
+                );
+            }
+            if (commande.id_facture && especes > 0.009) {
                 await connection.execute(
                     `INSERT INTO paiements (
                         id_utilisateur, id_facture, date_paiement,
                         montant, mode_paiement, note, reference
                     ) VALUES (?, ?, CURDATE(), ?, 'especes', ?, ?)`,
-                    [
-                        id_utilisateur,
-                        commande.id_facture,
-                        -montantTotal,  // ⚠️ NÉGATIF
-                        `Remboursement retour ${numero_retour}`,
-                        numero_retour
-                    ]
+                    [id_utilisateur, commande.id_facture, -especes, `Remboursement retour ${numero_retour}`, numero_retour]
                 );
+            }
+            if (commande.id_facture && (deduit > 0.009 || especes > 0.009)) {
+                // Statut de la facture recalculé
+                const [[f2]] = await connection.execute(
+                    `SELECT f.montant_total, COALESCE(SUM(p.montant), 0) AS regle
+                       FROM factures_vente f LEFT JOIN paiements p ON p.id_facture = f.id_facture AND p.id_utilisateur = f.id_utilisateur
+                      WHERE f.id_facture = ? AND f.id_utilisateur = ? GROUP BY f.id_facture`,
+                    [commande.id_facture, id_utilisateur]
+                );
+                if (f2) {
+                    const reste = (parseFloat(f2.montant_total) || 0) - (parseFloat(f2.regle) || 0);
+                    const regle = parseFloat(f2.regle) || 0;
+                    const statutFacture = reste <= 0.009 ? 'payee' : regle > 0.009 ? 'partiellement_payee' : 'en_attente';
+                    await connection.execute(
+                        `UPDATE factures_vente SET statut = ? WHERE id_facture = ? AND id_utilisateur = ? AND statut <> 'annulee'`,
+                        [statutFacture, commande.id_facture, id_utilisateur]
+                    );
+                }
             }
 
             await connection.commit();
@@ -439,6 +500,17 @@ class RetourClient {
         }));
 
         retour.montant_total = parseFloat(retour.montant_total) || 0;
+
+        // Comment le retour a été réglé
+        const [reglement] = await pool.execute(
+            `SELECT COALESCE(SUM(CASE WHEN mode_paiement = 'avoir' AND montant > 0 THEN montant ELSE 0 END), 0) AS deduit,
+                    COALESCE(SUM(CASE WHEN montant < 0 THEN -montant ELSE 0 END), 0) AS especes
+               FROM paiements WHERE id_utilisateur = ? AND id_facture = ? AND reference = ?`,
+            [id_utilisateur, retour.id_facture || 0, retour.numero_retour]
+        );
+        // Part qui a annulé ce que le client devait, et part rendue en espèces
+        retour.montant_rendu = parseFloat(reglement[0]?.especes) || 0;
+        retour.montant_deduit = Math.max(0, (parseFloat(reglement[0]?.deduit) || 0) - retour.montant_rendu);
 
         return retour;
     }
@@ -593,9 +665,24 @@ class RetourClient {
             if (retour.id_facture) {
                 await connection.execute(
                     `DELETE FROM paiements
-                     WHERE id_facture = ? AND id_utilisateur = ? AND reference = ? AND montant < 0`,
+                     WHERE id_facture = ? AND id_utilisateur = ? AND reference = ?
+                       AND (montant < 0 OR mode_paiement = 'avoir')`,
                     [retour.id_facture, id_utilisateur, retour.numero_retour]
                 );
+                const [[f2]] = await connection.execute(
+                    `SELECT f.montant_total, f.statut, COALESCE(SUM(p.montant), 0) AS regle
+                       FROM factures_vente f LEFT JOIN paiements p ON p.id_facture = f.id_facture AND p.id_utilisateur = f.id_utilisateur
+                      WHERE f.id_facture = ? AND f.id_utilisateur = ? GROUP BY f.id_facture`,
+                    [retour.id_facture, id_utilisateur]
+                );
+                if (f2 && f2.statut !== 'annulee') {
+                    const reste = (parseFloat(f2.montant_total) || 0) - (parseFloat(f2.regle) || 0);
+                    const regle = parseFloat(f2.regle) || 0;
+                    await connection.execute(
+                        'UPDATE factures_vente SET statut = ? WHERE id_facture = ? AND id_utilisateur = ?',
+                        [reste <= 0.009 ? 'payee' : regle > 0.009 ? 'partiellement_payee' : 'en_attente', retour.id_facture, id_utilisateur]
+                    );
+                }
             }
 
             await connection.execute(
@@ -652,4 +739,4 @@ class RetourClient {
     }
 }
 
-export default RetourClient;
+export default RetourClient;

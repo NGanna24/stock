@@ -2,10 +2,11 @@
 // Relances clients (impayés) : admin, manager et caissier.
 import express from 'express';
 import RelanceClientController from '../controllers/RelanceClientController.js';
-import { requireRole } from '../middleware/roleMiddleware.js';
+import { authenticateToken } from '../middleware/middleware.js';
 
 const router = express.Router();
-const equipe = requireRole('admin', 'manager', 'caissier');
+// Accès aux pages : selon les permissions du rôle (utils/permissions.js, controleAcces)
+const equipe = authenticateToken;
 
 router.get('/', equipe, RelanceClientController.liste);
 router.get('/client', equipe, RelanceClientController.detail);

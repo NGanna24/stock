@@ -51,6 +51,7 @@ class Caisse {
                     COUNT(*) AS nombre
                FROM paiements
               WHERE id_utilisateur = ? AND date_creation >= ? ${borne}
+                AND mode_paiement <> 'avoir'
               GROUP BY mode_paiement`,
             p
         );
@@ -98,6 +99,7 @@ class Caisse {
                LEFT JOIN factures_vente f ON f.id_facture = p.id_facture
                LEFT JOIN commandes_vente cv ON cv.id_commande = f.id_commande
               WHERE p.id_utilisateur = ? AND p.date_creation >= ? ${borne}
+                AND p.mode_paiement <> 'avoir'
               ORDER BY p.date_creation DESC
               LIMIT ${Number(limite)}`,
             p

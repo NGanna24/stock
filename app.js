@@ -65,6 +65,12 @@ import EmplacementRoutes from './routes/EmplacementRoutes.js';
 import CompteFournisseurRoutes from './routes/CompteFournisseurRoutes.js';
 import ReglagesDocumentsRoutes from './routes/ReglagesDocumentsRoutes.js';
 import AbonnementAdminRoutes from './routes/AbonnementAdminRoutes.js';
+import SuiviAdminRoutes from './routes/SuiviAdminRoutes.js';
+import { journalSuperAdmin } from './middleware/journalSuperAdmin.js';
+import { maintenance } from './middleware/maintenance.js';
+import { plateformePublique, plateformeAdmin } from './routes/PlateformeRoutes.js';
+import PermissionRoutes from './routes/PermissionRoutes.js';
+import { controleAcces } from './utils/permissions.js';
 
 // ==================== CONFIGURATION ENVIRONNEMENT ====================
 dotenv.config();
@@ -119,7 +125,13 @@ app.use(cors({
 
 // ==================== ROUTES API PRINCIPALES ====================
 // Journal d'activité : enregistre automatiquement les actions réussies (avant toutes les routes)
+// Maintenance décidée par le Super Admin (la console reste accessible)
+app.use('/api', maintenance);
+app.use('/api/plateforme', plateformePublique);
 app.use('/api', journalActivite);
+// Rôles et permissions réglés par le propriétaire : vérifiés ici pour chaque page
+app.use('/api', controleAcces);
+app.use('/api/permissions', PermissionRoutes);
 
 // Test de connexion (mode hors ligne) : réponse minuscule, sans authentification
 app.get('/api/ping', (req, res) => res.set('Cache-Control', 'no-store').json({ ok: true }));
@@ -147,8 +159,7 @@ app.use('/api/mouvement-stock', MouvementStockRoutes);
 app.use('/api/inventaires', inventaireRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/clients', clientRoutes);
-// Rapports et bénéfices : admin et manager uniquement (comme le menu)
-app.use('/api/rapports', requireRole('admin', 'manager'));
+// Rapports et bénéfices : selon les permissions du rôle (controleAcces)
 app.use('/api/rapports', rapportVenteRoutes);
 app.use('/api/rapports', rapportAchatRoutes);
 app.use('/api/rapports', rapportStockRoutes);
@@ -170,10 +181,13 @@ app.use('/api/assistant-achat', assistantAchatRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/gpt', gptRoutes);
 // ⚠️ Espace SUPER ADMIN : jeton super admin obligatoire
-app.use('/api/admin', authenticateSuperAdmin, adminRoutes);
-app.use('/api/super-admin/magasins', authenticateSuperAdmin, MagasinAdminRoutes);
-app.use('/api/super-admin/utilisateurs', authenticateSuperAdmin, UtilisateurAdminRoutes);
-app.use('/api/super-admin/abonnements', authenticateSuperAdmin, AbonnementAdminRoutes);
+// Chaque modification faite dans la console est notée dans le journal d'audit
+app.use('/api/admin', authenticateSuperAdmin, journalSuperAdmin, adminRoutes);
+app.use('/api/super-admin/magasins', authenticateSuperAdmin, journalSuperAdmin, MagasinAdminRoutes);
+app.use('/api/super-admin/utilisateurs', authenticateSuperAdmin, journalSuperAdmin, UtilisateurAdminRoutes);
+app.use('/api/super-admin/abonnements', authenticateSuperAdmin, journalSuperAdmin, AbonnementAdminRoutes);
+app.use('/api/super-admin/suivi', authenticateSuperAdmin, journalSuperAdmin, SuiviAdminRoutes);
+app.use('/api/super-admin/plateforme', authenticateSuperAdmin, journalSuperAdmin, plateformeAdmin);
 app.use('/api/super-admin/auth', SuperAdminAuthRoutes);
 app.use('/api', ProduitEntrepotRoutes); 
 app.use('/api', MouvementEntrepotRoutes);
@@ -213,4 +227,4 @@ const startServer = async () => {
 
 startServer();
 
-export default app;
+export default app;

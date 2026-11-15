@@ -2,6 +2,10 @@
 import express from 'express';
 import ProduitController from '../controllers/ProduitController.js';
 import { authenticateToken } from '../middleware/middleware.js';
+import { exigeAction } from '../utils/permissions.js';
+
+// Créer, modifier, supprimer un produit : action réglée par le propriétaire
+const modifierProduits = exigeAction('produits.modifier');
 import UniteVenteController from '../controllers/UniteVenteController.js';
 
 const router = express.Router();
@@ -78,30 +82,35 @@ router.get(
 router.post(
     '/',
     authenticateToken,
+    modifierProduits,
     ProduitController.createProduit
 );
 
 router.put(
     '/:id',
     authenticateToken,
+    modifierProduits,
     ProduitController.updateProduit
 );
 
 router.patch(
     '/:id/stock',
     authenticateToken,
+    modifierProduits,
     ProduitController.updateProduitStock
 );
 
 router.patch(
     '/:id/status',
     authenticateToken,
+    modifierProduits,
     ProduitController.updateProduitStatus
 );
 
 router.delete(
     '/:id',
     authenticateToken,
+    modifierProduits,
     ProduitController.deleteProduit
 );
 

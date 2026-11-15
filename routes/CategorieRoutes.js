@@ -2,10 +2,9 @@
 import express from 'express';
 import CategorieController from '../controllers/CategorieController.js';
 import { authenticateToken } from '../middleware/middleware.js';
-import { requireRole } from '../middleware/roleMiddleware.js';
 
-// Mêmes profils que ceux qui voient la page Catégories dans le menu
-const peutModifier = requireRole('admin', 'manager', 'magasinier');
+// Modification : selon les permissions du rôle (page Catégories ou Produits, voir controleAcces)
+const peutModifier = (req, res, next) => next();
 
 const router = express.Router();
 

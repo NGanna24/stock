@@ -5,7 +5,8 @@ import DetteFournisseurController from '../controllers/DetteFournisseurControlle
 import { requireRole } from '../middleware/roleMiddleware.js';
 
 const router = express.Router();
-const responsables = requireRole('admin', 'manager');
+// Accès aux pages : selon les permissions du rôle (utils/permissions.js, controleAcces)
+const responsables = (req, res, next) => next();
 
 router.get('/', responsables, DetteFournisseurController.liste);
 router.get('/fournisseurs/:id', responsables, DetteFournisseurController.detail);

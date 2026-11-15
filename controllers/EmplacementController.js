@@ -7,9 +7,10 @@
 import EmplacementMagasin from '../models/EmplacementMagasin.js';
 import Entrepot from '../models/Entrepot.js';
 import CommandeAchat from '../models/CommandeAchat.js';
+import { aModule, peut } from '../utils/permissions.js';
 
-// Le caissier consulte seulement ; les autres rôles peuvent ranger le stock
-const peutModifier = (req) => !(req.user.type === 'employe' && String(req.user.role || '').toLowerCase() === 'caissier');
+// Ranger le stock : page Emplacements, ou droit de modifier les produits (réglé par le propriétaire)
+const peutModifier = (req) => aModule(req, 'emplacements') || peut(req, 'produits.modifier');
 const espace = (req) => req.workspaceId || req.user.id;
 
 const fail = (message, statusCode) => Object.assign(new Error(message), { statusCode });

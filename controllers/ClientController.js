@@ -1,5 +1,7 @@
 // controllers/ClientController.js
+import { peut } from '../utils/permissions.js';
 import Client from '../models/Client.js';
+import { indicatifDuMagasin } from '../utils/telephone.js';
 
 const sendError = (res, error, fallback) => {
     if (!error.statusCode) console.error('❌', error);
@@ -15,7 +17,8 @@ const sendError = (res, error, fallback) => {
     });
 };
 
-const responsable = (req) => ['admin', 'manager'].includes(req.user?.role);
+// Plafond de crédit : action réglée par le propriétaire (Rôles et permissions)
+const responsable = (req) => peut(req, 'clients.credit');
 
 class ClientController {
     /* GET /api/clients?search&type&statut&tri&inclureInactifs */
@@ -29,6 +32,15 @@ class ClientController {
     }
 
     /* GET /api/clients/stats */
+    /** GET /api/clients/indicatif : pays du magasin pour la saisie des numéros */
+    static async indicatif(req, res) {
+        try {
+            res.json({ success: true, indicatif: await indicatifDuMagasin(req.workspaceId) });
+        } catch (e) {
+            res.json({ success: true, indicatif: '225' });
+        }
+    }
+
     static async getStats(req, res) {
         try {
             res.json({ success: true, data: await Client.getStats(req.workspaceId) });

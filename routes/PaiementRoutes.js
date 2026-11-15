@@ -2,6 +2,7 @@
 import express from 'express';
 import PaiementController from '../controllers/PaiementController.js';
 import { authenticateToken } from '../middleware/middleware.js';
+import { exigeAction } from '../utils/permissions.js';
 
 const router = express.Router();
 
@@ -24,6 +25,6 @@ router.get('/mode/:mode', authenticateToken, PaiementController.getByMode);
 router.get('/', authenticateToken, PaiementController.getAll);
 router.get('/:id', authenticateToken, PaiementController.getById);
 router.post('/', authenticateToken, PaiementController.create);
-router.delete('/:id', authenticateToken, PaiementController.delete);
+router.delete('/:id', authenticateToken, exigeAction('encaissements.supprimer'), PaiementController.delete);
 
 export default router;

@@ -341,6 +341,26 @@ CREATE TABLE IF NOT EXISTS cachets_magasin (
         REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
 )`;
 
+// Journal de la console Super Admin : qui a fait quoi (prolongations, blocages, réglages, connexions)
+const TABLE_JOURNAL_SUPER_ADMIN = `
+CREATE TABLE IF NOT EXISTS journal_super_admin (
+    id_journal BIGINT AUTO_INCREMENT PRIMARY KEY,
+    id_super_admin INT NULL,
+    acteur_nom VARCHAR(120) NULL,
+    action VARCHAR(40) NOT NULL,
+    cible_type VARCHAR(30) NULL,
+    cible_id INT NULL,
+    cible_nom VARCHAR(160) NULL,
+    libelle VARCHAR(255) NOT NULL,
+    details TEXT NULL,
+    ip VARCHAR(64) NULL,
+    user_agent VARCHAR(255) NULL,
+    date_action DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_jsa_date (date_action),
+    INDEX idx_jsa_action (action),
+    INDEX idx_jsa_admin (id_super_admin)
+)`;
+
 // Réglages des documents : quel cachet sur quel document, signature, modèle de facture
 const TABLE_REGLAGES_DOCUMENTS = `
 CREATE TABLE IF NOT EXISTS reglages_documents (
@@ -350,6 +370,20 @@ CREATE TABLE IF NOT EXISTS reglages_documents (
     regles JSON NULL,
     date_modification DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_regdoc_u FOREIGN KEY (id_utilisateur)
+        REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+)`;
+
+// Rôles et permissions réglés par le propriétaire (une ligne par patron et par rôle).
+// Aucune ligne = réglages par défaut (utils/permissions.js).
+const TABLE_PERMISSIONS_ROLES = `
+CREATE TABLE IF NOT EXISTS permissions_roles (
+    id_utilisateur INT NOT NULL,
+    role VARCHAR(30) NOT NULL,
+    modules JSON NULL,
+    actions JSON NULL,
+    date_modification DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id_utilisateur, role),
+    CONSTRAINT fk_permroles_u FOREIGN KEY (id_utilisateur)
         REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
 )`;
 
@@ -366,6 +400,8 @@ export async function executerMigrations(pool) {
         await unifierPaiementsFournisseurs(conn);
         await conn.query(TABLE_CACHETS);
         await conn.query(TABLE_REGLAGES_DOCUMENTS);
+        await conn.query(TABLE_JOURNAL_SUPER_ADMIN);
+        await conn.query(TABLE_PERMISSIONS_ROLES);
         if (!(await colonneExiste(conn, 'produits', 'id_emplacement_magasin'))) {
             await conn.query('ALTER TABLE produits ADD COLUMN id_emplacement_magasin INT NULL');
             await conn.query('ALTER TABLE produits ADD INDEX idx_produit_emplacement (id_emplacement_magasin)');
