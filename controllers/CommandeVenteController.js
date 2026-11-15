@@ -1,5 +1,5 @@
 // controllers/CommandeVenteController.js
-import { peut } from '../utils/permissions.js';
+import { peut, permissionsDe, prixDuCatalogueSiInterdit } from '../utils/permissions.js';
 import CommandeVente from '../models/CommandeVente.js';
 
 import Produit from '../models/Produit.js';
@@ -23,8 +23,11 @@ class CommandeVenteController {
                 notes,
                 mode_paiement, 
                 date_echeance,
-                lignes
             } = req.body;
+
+            // Prix : sans le droit de le modifier, le prix du catalogue s'applique (réglé par le propriétaire)
+            await permissionsDe(req);
+            const lignes = prixDuCatalogueSiInterdit(req, req.body.lignes);
 
             // ========== 1. VALIDATIONS DE BASE ==========
             if (!date_commande) {

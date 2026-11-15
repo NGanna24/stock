@@ -67,6 +67,7 @@ export const MODULES = [
 // Actions sensibles, en plus de l'accès aux pages
 export const ACTIONS = [
     { id: 'ventes.annuler', libelle: 'Annuler une vente', aide: 'Les articles reviennent en stock.' },
+    { id: 'ventes.modifier_prix', libelle: 'Modifier le prix pendant la vente', aide: 'Sans ce droit, le prix du catalogue est appliqué.' },
     { id: 'ventes.rembourser', libelle: 'Rembourser en annulant une vente payée', aide: "De l'argent sort de la caisse." },
     { id: 'encaissements.supprimer', libelle: 'Supprimer un encaissement', aide: 'Recette ou paiement déjà enregistré.' },
     { id: 'clients.credit', libelle: 'Gérer le crédit des clients', aide: 'Plafond de crédit, désactiver ou fusionner un client.' },
@@ -89,7 +90,7 @@ export const DEFAUTS = {
             'fournisseurs', 'commandes-achat', 'receptions', 'retours-fournisseurs', 'transferts', 'comptes-fournisseurs',
             'rapport-ventes', 'rapport-achats', 'rapport-stocks', 'benefices',
         ],
-        actions: ['ventes.annuler', 'ventes.rembourser', 'encaissements.supprimer', 'clients.credit', 'caisse.historique', 'produits.modifier', 'approvisionnement.gerer', 'inventaires.gerer'],
+        actions: ['ventes.annuler', 'ventes.modifier_prix', 'ventes.rembourser', 'encaissements.supprimer', 'clients.credit', 'caisse.historique', 'produits.modifier', 'approvisionnement.gerer', 'inventaires.gerer'],
     },
     caissier: {
         modules: ['alertes', 'clients', 'commandes-clients', 'caisse', 'factures', 'recettes', 'retours-clients', 'relances', 'produits'],
@@ -210,6 +211,16 @@ export function aModule(req, module) {
     if (estProprietaire(req)) return true;
     const p = req.permissions || DEFAUTS[req.user?.role] || { modules: [] };
     return p.modules.includes(module);
+}
+
+/**
+ * Sans le droit « Modifier le prix pendant la vente » : on ignore le prix et la remise envoyés,
+ * le serveur applique le prix du catalogue (unité de vente, sinon produit).
+ * Vaut aussi pour les ventes faites hors ligne puis synchronisées.
+ */
+export function prixDuCatalogueSiInterdit(req, lignes) {
+    if (!Array.isArray(lignes) || peut(req, 'ventes.modifier_prix')) return lignes;
+    return lignes.map((l) => ({ ...l, prix_vente: 0, remise: 0 }));
 }
 
 const refus = (res, message) => res.status(403).json({ success: false, code: 'PERMISSION_REFUSEE', message });

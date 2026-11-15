@@ -1,5 +1,6 @@
 // controllers/HorsLigneController.js
 import HorsLigne from '../models/HorsLigne.js';
+import { permissionsDe, prixDuCatalogueSiInterdit } from '../utils/permissions.js';
 
 const sendError = (res, error, fallback) => {
     console.error('❌', error);
@@ -38,10 +39,13 @@ class HorsLigneController {
         if (!ventes.length) return res.status(400).json({ success: false, message: 'Aucune vente à envoyer' });
         if (ventes.length > 50) return res.status(400).json({ success: false, message: 'Maximum 50 ventes par envoi' });
 
+        // Prix : sans le droit de le modifier, le prix du catalogue s'applique (réglé par le propriétaire)
+        await permissionsDe(req);
         const resultats = [];
         for (const v of ventes) {
             try {
-                resultats.push(await HorsLigne.synchroniser(req.workspaceId, v, vendeur(req)));
+                const vente = v && Array.isArray(v.lignes) ? { ...v, lignes: prixDuCatalogueSiInterdit(req, v.lignes) } : v;
+                resultats.push(await HorsLigne.synchroniser(req.workspaceId, vente, vendeur(req)));
             } catch (error) {
                 if (!error.statusCode) console.error('❌ Synchro vente hors ligne :', error);
                 resultats.push({
