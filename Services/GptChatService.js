@@ -150,9 +150,14 @@ Le message vient d'une DICTÉE VOCALE. Il peut contenir des fautes d'écoute ou 
 - Les nombres peuvent être écrits en lettres : « deux cartons » = 2 cartons.
 - Si un nom de produit est approximatif, cherche quand même avec l'outil : la recherche tolère les fautes.
 
+## Qui te parle
+Beaucoup d'utilisateurs lisent peu et parlent un français simple, avec des mots de la rue (nouchi) ou des mots locaux mélangés. Exemples : « c'est fini dans boutique » = rupture de stock, « l'argent est rentré combien » = combien j'ai vendu, « ça marche pas » = ça ne se vend pas, « gâté » = abîmé.
+- Comprends l'idée, même si la phrase est mal construite. Ne corrige jamais la personne.
+
 ## Comment tu réponds
-Ta réponse est LUE À VOIX HAUTE.
-- Français simple, tutoiement, ton chaleureux de commerçant. Une à trois phrases courtes.
+Ta réponse est LUE À VOIX HAUTE à quelqu'un qui ne lit peut-être pas.
+- Français très simple, mots de tous les jours, comme à un client au marché. Tutoiement, ton chaleureux.
+- Une à trois phrases très courtes (12 mots maximum chacune). Le chiffre important d'abord.
 - Pas de listes à puces, pas de tableaux, pas de symboles (*, #, /, %), pas d'emoji.
 - Montants : écris « 15 000 francs ». Pourcentages : « 20 pour cent ».
 - Pas de jargon : jamais « unité de base », « outil », « requête », « base de données ».
@@ -194,7 +199,22 @@ Bonjour, merci, au revoir : réponds en une phrase, sans outil. Hors sujet : ram
   // ============================================================
   // CHAT
   // ============================================================
-  async chat(userMessage, workspaceId, user = {}, history = []) {
+  // Consignes en plus quand on envoie directement la voix (une seule étape : écouter, chercher, répondre)
+  consignesVoix(vocabulaire = '') {
+    return `## Message vocal
+Le dernier message de l'utilisateur est un ENREGISTREMENT DE SA VOIX (accent ivoirien, bruit de boutique possible).
+${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients) : ${vocabulaire.slice(0, 1500)}\n` : ''}- Écoute, comprends la demande, appelle les outils si besoin, puis réponds.
+- Ta réponse finale commence OBLIGATOIREMENT par une ligne « ENTENDU: » suivie de ce que la personne a demandé, en français correct et court. Puis, à la ligne suivante, ta réponse.
+- Si on n'entend aucune parole : « ENTENDU: [silence] » puis « Je n'ai rien entendu. Parle plus près du téléphone. »`;
+  }
+
+  /**
+   * @param {{ audio?: { mime: string, data: string }, vocabulaire?: string, sansSecours?: boolean }} options
+   *   audio : la voix est envoyée telle quelle (Gemini seulement)
+   */
+  async chat(userMessage, workspaceId, user = {}, history = [], options = {}) {
+    const { audio = null, vocabulaire = '', sansSecours = false } = options;
+    if (audio) userMessage = 'Message vocal ci-dessus : réponds en commençant par la ligne ENTENDU:';
     if (!userMessage || typeof userMessage !== 'string') {
       throw new Error('Message utilisateur requis');
     }
@@ -216,9 +236,9 @@ Bonjour, merci, au revoir : réponds en une phrase, sans outil. Hors sujet : ram
       : [];
 
     const messages = [
-      { role: 'system', content: this.getSystemPrompt(user, boutique) },
+      { role: 'system', content: this.getSystemPrompt(user, boutique) + (audio ? `\n\n${this.consignesVoix(vocabulaire)}` : '') },
       ...safeHistory,
-      { role: 'user', content: userMessage.trim() },
+      { role: 'user', content: userMessage.trim(), ...(audio ? { _audio: audio } : {}) },
     ];
 
     const toolsUsed = [];
@@ -230,7 +250,7 @@ Bonjour, merci, au revoir : réponds en une phrase, sans outil. Hors sujet : ram
         model: this.model,
         // champs propres à Gemini retirés : Groq les refuse
         messages: messages.map(({ _gemini_parts, _gemini_modele, reasoning, ...m }) =>
-          m.tool_calls ? { ...m, tool_calls: m.tool_calls.map(({ _gemini_id, ...t }) => t) } : m
+          m.tool_calls ? { ...m, tool_calls: m.tool_calls.map(({ _gemini_id, ...t }) => t) } : (({ _audio, ...r }) => r)(m)
         ),
         tools: outils,
         tool_choice: 'auto',
@@ -240,11 +260,12 @@ Bonjour, merci, au revoir : réponds en une phrase, sans outil. Hors sujet : ram
       });
 
     const appeler = async () => {
-      if (this.fournisseur !== 'gemini') return appelGroq();
+      if (this.fournisseur !== 'gemini' && !audio) return appelGroq();
       try {
         return await Gemini.discuter({ messages, tools: outils, max_tokens: this.MAX_TOKENS });
       } catch (e) {
-        if ([429, 503].includes(e.status) && this.groqSecours) {
+        // Avec la voix, Groq ne peut pas écouter : c'est l'appelant qui passe par la dictée
+        if ([429, 503].includes(e.status) && this.groqSecours && !audio && !sansSecours) {
           console.warn('[GptChatService] limite Google atteinte : Groq prend le relais');
           return appelGroq();
         }
@@ -309,6 +330,7 @@ Bonjour, merci, au revoir : réponds en une phrase, sans outil. Hors sujet : ram
       if (iterations >= this.MAX_ITERATIONS && assistantMessage.tool_calls?.length) {
         return {
           success: true,
+          question: null,
           reply: action
             ? 'Vente préparée. Vérifie et touche Confirmer.'
             : "Je n'arrive pas à trouver cette information. Dis-le autrement, par exemple avec le nom exact du produit.",
@@ -320,6 +342,14 @@ Bonjour, merci, au revoir : réponds en une phrase, sans outil. Hors sujet : ram
       }
 
       let finalReply = assistantMessage.content?.trim() || "Je n'ai pas bien compris. Tu peux répéter autrement ?";
+      // Message vocal : la 1re ligne dit ce que Miyo a entendu
+      let question = null;
+      const entendu = finalReply.match(/^\s*\**ENTENDU\**\s*:\s*(.*?)\s*(?:\n+|$)/i);
+      if (entendu) {
+        question = entendu[1].replace(/^\**\s*/, '').replace(/^["«]\s*|\s*["»]$/g, '').trim() || null;
+        if (question && /^\[?silence\]?\.?$/i.test(question)) question = '';
+        finalReply = finalReply.slice(entendu[0].length).trim() || "Je n'ai rien entendu. Parle plus près du téléphone.";
+      }
       finalReply = finalReply
         .replace(/^["'«]|["'»]$/g, '')
         .replace(/^(Miyo|Assistant)\s*:\s*/i, '')
@@ -330,6 +360,7 @@ Bonjour, merci, au revoir : réponds en une phrase, sans outil. Hors sujet : ram
 
       return {
         success: true,
+        question,
         reply: finalReply,
         action,
         memo: memo.join(' | ').slice(0, 1200),

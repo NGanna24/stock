@@ -201,7 +201,12 @@ class GeminiClient {
       if (m.role === 'system') {
         systeme += (systeme ? '\n\n' : '') + m.content;
       } else if (m.role === 'user') {
-        pousser('user', [{ text: String(m.content ?? '') }]);
+        // Message vocal : Gemini écoute directement l'enregistrement (une seule étape)
+        if (m._audio?.data) {
+          pousser('user', [{ inlineData: { mimeType: m._audio.mime, data: m._audio.data } }, { text: String(m.content ?? '') }]);
+        } else {
+          pousser('user', [{ text: String(m.content ?? '') }]);
+        }
       } else if (m.role === 'assistant') {
         for (const t of m.tool_calls || []) {
           appels.set(t.id, { name: t.function?.name, gid: t._gemini_id });
@@ -322,6 +327,17 @@ class GeminiClient {
         },
       ],
     };
+  }
+
+  // ------------------------------------------------------------
+  // Enregistrement prêt à envoyer à Gemini (type audio + contenu en base64)
+  // ------------------------------------------------------------
+  audioDepuisFichier(filePath, mimetype = '') {
+    if (!fs.existsSync(filePath)) throw new Error('Fichier audio introuvable');
+    const ext = path.extname(filePath).toLowerCase();
+    let mime = MIME_AUDIO[ext] || (mimetype && mimetype.startsWith('audio/') ? mimetype : 'audio/mp4');
+    if (mime === 'audio/m4a' || mime === 'audio/x-m4a') mime = 'audio/mp4';
+    return { mime, data: fs.readFileSync(filePath).toString('base64') };
   }
 
   // ------------------------------------------------------------

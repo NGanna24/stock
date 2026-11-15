@@ -17,4 +17,10 @@ router.post(
 // ✅ NOUVELLE ROUTE : Chat avec Miyo
 router.post('/chat', authenticateToken, GptController.chat);
 
+// Voix en une seule étape : écouter, chercher, répondre
+router.post('/voix', authenticateToken, upload.single('audio'), GptController.voix);
+
+// Réponses immédiates (gros boutons de l'assistant), sans IA
+router.post('/rapide', authenticateToken, GptController.rapide);
+
 export default router;

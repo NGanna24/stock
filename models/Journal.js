@@ -40,7 +40,7 @@ class Journal {
 
         const [rows] = await pool.query(
             `SELECT j.id_journal, j.acteur_type, j.acteur_id, j.acteur_nom, j.acteur_role, j.action, j.module,
-                    j.libelle, j.reference, j.entite_id, j.methode, j.chemin, j.statut_http, j.ip,
+                    j.libelle, j.reference, j.entite_id,
                     j.date_action
              FROM journal_activite j
              WHERE ${where}
@@ -59,7 +59,7 @@ class Journal {
         const { where, params } = Journal._filtres(idUtilisateur, f);
         const [rows] = await pool.query(
             `SELECT j.date_action, j.acteur_nom, j.acteur_role, j.acteur_type, j.module, j.action, j.libelle,
-                    j.reference, j.ip
+                    j.reference
              FROM journal_activite j WHERE ${where}
              ORDER BY j.date_action DESC, j.id_journal DESC LIMIT 5000`,
             params
@@ -74,6 +74,9 @@ class Journal {
         );
         const ligne = rows[0];
         if (!ligne) return null;
+        // Données techniques (adresse IP, adresse appelée, code de réponse) : gardées pour la sécurité,
+        // jamais montrées aux utilisateurs de Miyo
+        for (const cle of ['ip', 'methode', 'chemin', 'statut_http']) delete ligne[cle];
         try { ligne.details = ligne.details ? JSON.parse(ligne.details) : null; } catch { /* texte brut */ }
         return ligne;
     }
