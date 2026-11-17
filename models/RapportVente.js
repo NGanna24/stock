@@ -255,6 +255,49 @@ class RapportVente {
             chiffre_affaires: parseFloat(r.chiffre_affaires) || 0
         }));
     }
+
+    /**
+     * Prix baissés pendant la vente (prix vendu sous le prix du catalogue), par vendeur
+     */
+    static async getPrixBaisses(dateDebut, dateFin, id_utilisateur) {
+        const effectif = 'lcv.prix_vente * (1 - COALESCE(lcv.remise, 0) / 100)';
+        const [parVendeur] = await pool.query(
+            `SELECT COALESCE(cv.vendeur_nom, 'Non renseigné') AS vendeur,
+                    COUNT(*) AS nb_lignes,
+                    COUNT(DISTINCT cv.id_commande) AS nb_ventes,
+                    ROUND(SUM((lcv.prix_catalogue - ${effectif}) * lcv.quantite), 2) AS montant_baisse
+             FROM ligne_commande_vente lcv
+             JOIN commandes_vente cv ON cv.id_commande = lcv.id_commande
+             WHERE cv.id_utilisateur = ? AND cv.date_commande BETWEEN ? AND ?
+               AND cv.statut <> 'annulee'
+               AND lcv.prix_catalogue IS NOT NULL AND lcv.prix_catalogue > ${effectif} + 0.5
+             GROUP BY COALESCE(cv.vendeur_nom, 'Non renseigné')
+             ORDER BY montant_baisse DESC`,
+            [id_utilisateur, dateDebut, dateFin]
+        );
+        const [lignes] = await pool.query(
+            `SELECT cv.id_commande, cv.numero_commande, cv.date_commande, cv.nomclient,
+                    COALESCE(cv.vendeur_nom, 'Non renseigné') AS vendeur,
+                    p.nom AS produit, lcv.nom_unite_vente, lcv.quantite,
+                    lcv.prix_catalogue, ROUND(${effectif}, 2) AS prix_vendu,
+                    ROUND((lcv.prix_catalogue - ${effectif}) * lcv.quantite, 2) AS montant_baisse
+             FROM ligne_commande_vente lcv
+             JOIN commandes_vente cv ON cv.id_commande = lcv.id_commande
+             JOIN produits p ON p.id_produit = lcv.id_produit
+             WHERE cv.id_utilisateur = ? AND cv.date_commande BETWEEN ? AND ?
+               AND cv.statut <> 'annulee'
+               AND lcv.prix_catalogue IS NOT NULL AND lcv.prix_catalogue > ${effectif} + 0.5
+             ORDER BY cv.date_commande DESC, cv.id_commande DESC
+             LIMIT 50`,
+            [id_utilisateur, dateDebut, dateFin]
+        );
+        const num = (v) => Math.round((parseFloat(v) || 0) * 100) / 100;
+        return {
+            total: num(parVendeur.reduce((s, r) => s + (parseFloat(r.montant_baisse) || 0), 0)),
+            par_vendeur: parVendeur.map((r) => ({ ...r, nb_lignes: Number(r.nb_lignes), nb_ventes: Number(r.nb_ventes), montant_baisse: num(r.montant_baisse) })),
+            lignes: lignes.map((l) => ({ ...l, quantite: num(l.quantite), prix_catalogue: num(l.prix_catalogue), prix_vendu: num(l.prix_vendu), montant_baisse: num(l.montant_baisse) })),
+        };
+    }
 }
 
 export default RapportVente;

@@ -45,7 +45,7 @@ class HorsLigneController {
         for (const v of ventes) {
             try {
                 const vente = v && Array.isArray(v.lignes) ? { ...v, lignes: prixDuCatalogueSiInterdit(req, v.lignes) } : v;
-                resultats.push(await HorsLigne.synchroniser(req.workspaceId, vente, vendeur(req)));
+                resultats.push(await HorsLigne.synchroniser(req.workspaceId, vente, vendeur(req), { remise_max: req.permissions?.remise_max ?? null }));
             } catch (error) {
                 if (!error.statusCode) console.error('❌ Synchro vente hors ligne :', error);
                 resultats.push({

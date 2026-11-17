@@ -6,6 +6,7 @@
 //     (seule exception : les colonnes « mode de paiement » passent d'une liste fermée
 //     à du texte, les valeurs enregistrées restent identiques).
 // Fonctionne avec MySQL 5.7/8 et MariaDB.
+import { numeroterAnciensRecus } from '../utils/recu.js';
 import normaliserTelephone from '../utils/telephone.js';
 import { prochainNumero, estDoublonNumero } from '../utils/numerotation.js';
 
@@ -71,6 +72,17 @@ const COLONNES = [
     ['employes', 'notes', 'TEXT NULL'],
     // ---------- Vente rattachée à une fiche client ----------
     ['commandes_vente', 'id_client', 'INT NULL'],
+    // ---------- Prix pendant la vente : trace et remise maximum ----------
+    ['ligne_commande_vente', 'prix_catalogue', 'DECIMAL(15, 2) NULL'],
+    ['commandes_vente', 'vendeur_nom', 'VARCHAR(150) NULL'],
+    ['commandes_vente', 'vendeur_id_employe', 'INT NULL'],
+    ['permissions_roles', 'remise_max', 'DECIMAL(5, 2) NULL'],
+    // ---------- Numéro de reçu fixe (1, 2, 3… par boutique, affiché REC-000001) ----------
+    ['paiements', 'numero_recu', 'INT NULL'],
+    // ---------- Rôles personnalisés ----------
+    ['permissions_roles', 'libelle', 'VARCHAR(60) NULL'],
+    ['permissions_roles', 'role_base', 'VARCHAR(30) NULL'],
+    ['employes', 'role_personnalise', 'VARCHAR(30) NULL'],
 ];
 
 const INDEX = [
@@ -79,6 +91,9 @@ const INDEX = [
     ['commandes_vente', 'idx_cv_client', '(id_client)'],
     // Numéro client unique par compte (CL-0001…) ; plusieurs NULL autorisés le temps de la numérotation
     ['clients', 'uniq_code_client', '(id_utilisateur, code_client)', 'UNIQUE'],
+    // Un numéro de reçu ne sert qu'une fois par boutique
+    ['paiements', 'uniq_numero_recu', '(id_utilisateur, numero_recu)', 'UNIQUE'],
+    ['commandes_vente', 'idx_cv_vendeur', '(id_utilisateur, vendeur_id_employe)'],
 ];
 
 // Abonnements des patrons (validés à la main par le super-admin).
@@ -432,6 +447,8 @@ export async function executerMigrations(pool) {
                 await conn.query(`ALTER TABLE \`${table}\` ADD ${type === 'UNIQUE' ? 'UNIQUE ' : ''}INDEX \`${nom}\` ${colonnes}`);
             }
         }
+        // Numéros de reçu pour les encaissements déjà enregistrés (la colonne vient d'être ajoutée)
+        await numeroterAnciensRecus(conn);
         if (!(await cleExiste(conn, 'commandes_vente', 'fk_cv_client'))) {
             await conn.query(
                 `ALTER TABLE commandes_vente ADD CONSTRAINT fk_cv_client

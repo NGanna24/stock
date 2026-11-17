@@ -12,6 +12,8 @@ const router = express.Router();
 
 router.get('/moi', authenticateToken, PermissionController.moi);
 router.get('/', exigeProprietaire, PermissionController.liste);
+router.get('/choix-roles', exigeProprietaire, PermissionController.choix);
+router.post('/roles', exigeProprietaire, PermissionController.creer);
 router.put('/:role', exigeProprietaire, PermissionController.enregistrer);
 router.delete('/:role', exigeProprietaire, PermissionController.retablir);
 

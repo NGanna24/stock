@@ -123,7 +123,13 @@ class CommandeVenteController {
                 id_utilisateur: req.workspaceId,
                 mode_paiement: mode_paiement || 'especes',
                 date_echeance: date_echeance || null,
-                lignes  // ✅ On transmet les lignes telles quelles (avec id_unite_vente, quantite_base, etc.)
+                lignes,  // ✅ On transmet les lignes telles quelles (avec id_unite_vente, quantite_base, etc.)
+                // Baisse de prix maximum du rôle, et qui a fait la vente (trace)
+                remise_max: req.permissions?.remise_max ?? null,
+                vendeur: {
+                    nom: req.user?.fullname || null,
+                    id_employe: req.user?.type === 'employe' ? req.user.id_employe : null,
+                },
             });
 
             return res.status(201).json({
@@ -133,6 +139,9 @@ class CommandeVenteController {
             });
 
         } catch (error) {
+            if (error.code === 'PRIX_TROP_BAS') {
+                return res.status(400).json({ success: false, code: error.code, message: error.message });
+            }
             if (error.code === 'TELEPHONE_INVALIDE') {
                 return res.status(400).json({ success: false, message: error.message, code: error.code });
             }

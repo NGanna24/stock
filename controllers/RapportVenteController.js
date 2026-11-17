@@ -24,14 +24,16 @@ class RapportVenteController {
                 parProduit,
                 parJour,
                 parStatut,
-                topClients
+                topClients,
+                prixBaisses
             ] = await Promise.all([
                 RapportVente.getVentesByPeriod(debut, fin, req.workspaceId),
                 RapportVente.getTotauxVentes(debut, fin, req.workspaceId),
                 RapportVente.getVentesParProduit(debut, fin, req.workspaceId),
                 RapportVente.getVentesParJour(debut, fin, req.workspaceId),
                 RapportVente.getVentesParStatut(debut, fin, req.workspaceId),
-                RapportVente.getTopClients(debut, fin, req.workspaceId, 10)
+                RapportVente.getTopClients(debut, fin, req.workspaceId, 10),
+                RapportVente.getPrixBaisses(debut, fin, req.workspaceId)
             ]);
 
             res.status(200).json({
@@ -43,7 +45,9 @@ class RapportVenteController {
                     par_produit: parProduit,
                     par_jour: parJour,
                     par_statut: parStatut,
-                    top_clients: topClients
+                    top_clients: topClients,
+                    // Prix baissés pendant la vente, par vendeur
+                    prix_baisses: prixBaisses
                 }
             });
         } catch (error) {

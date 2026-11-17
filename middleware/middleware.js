@@ -109,6 +109,8 @@ export const authenticateToken = (req, res, next) => {
                     type,                                    // 'utilisateur' | 'employe'
                     id_magasin,
                     role,                                    // 'admin' | 'caissier' | 'magasinier'...
+                    // Rôle personnalisé créé par le patron (ses droits remplacent ceux du rôle de base)
+                    role_personnalise: type === 'employe' ? (user.role_personnalise || null) : null,
                     fullname:       user.fullname,
                     telephone:      user.telephone,
                     slug:           user.slug,

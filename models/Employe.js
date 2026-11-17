@@ -147,10 +147,12 @@ class Employe {
                     e.actif, e.date_creation, e.derniere_connexion,
                     e.photo_url, e.date_embauche, e.quartier,
                     e.id_magasin, r.nom AS role_nom, r.id_role,
+                    e.role_personnalise, pr.libelle AS role_libelle,
                     m.ville AS magasin_ville
              FROM employes e
              JOIN roles r ON e.id_role = r.id_role
              LEFT JOIN magasins m ON e.id_magasin = m.id_magasin
+             LEFT JOIN permissions_roles pr ON pr.id_utilisateur = e.id_utilisateur AND CAST(pr.role AS BINARY) = CAST(e.role_personnalise AS BINARY)
              WHERE e.id_utilisateur = ?
              ORDER BY e.date_creation DESC`,
             [id_utilisateur]
@@ -163,7 +165,7 @@ class Employe {
      * Créer un employé
      * ============================================================
      */
-    static async create({ id_utilisateur, id_magasin, fullname, telephone, password, roleName }) {
+    static async create({ id_utilisateur, id_magasin, fullname, telephone, password, roleName, role_personnalise = null }) {
         // Hasher le mot de passe
         const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -178,9 +180,9 @@ class Employe {
 
         const [result] = await pool.execute(
             `INSERT INTO employes 
-                (id_utilisateur, id_magasin, id_role, fullname, slug, telephone, password, actif)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-            [id_utilisateur, id_magasin, roleId, fullname, slug, telephone, hashedPassword]
+                (id_utilisateur, id_magasin, id_role, fullname, slug, telephone, password, actif, role_personnalise)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+            [id_utilisateur, id_magasin, roleId, fullname, slug, telephone, hashedPassword, role_personnalise]
         );
 
         return result.insertId;
@@ -214,6 +216,12 @@ static async update(id, id_utilisateur, data) {
         if (!roleId) throw new Error(`Rôle '${data.roleName}' invalide`);
         updates.push('id_role = ?');
         values.push(roleId);
+    }
+
+    // Rôle personnalisé du patron (null = rôle de base seulement)
+    if (data.role_personnalise !== undefined) {
+        updates.push('role_personnalise = ?');
+        values.push(data.role_personnalise);
     }
 
     if (data.id_magasin !== undefined) {

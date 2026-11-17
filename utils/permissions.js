@@ -107,7 +107,7 @@ export const DEFAUTS = {
     },
 };
 
-const TOUT = Object.freeze({ tout: true, modules: ['*'], actions: ['*'] });
+const TOUT = Object.freeze({ tout: true, modules: ['*'], actions: ['*'], remise_max: null });
 
 // ------------------------------------------------------------
 // Lecture / écriture des réglages
@@ -123,63 +123,150 @@ function lireJson(v) {
     try { return JSON.parse(v); } catch { return null; }
 }
 
-/** Réglages d'un rôle pour un patron (défauts si rien n'est enregistré) */
+const erreurRole = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
+
+// Rôles personnalisés : clé « perso_xxxxxx », créés par le patron à partir d'un rôle de base
+export const estRolePerso = (role) => /^perso_[a-z0-9]{4,20}$/.test(String(role || ''));
+
+// Baisse de prix maximum (en %) ; null = pas de limite
+const lireRemise = (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = parseFloat(v);
+    if (Number.isNaN(n)) return null;
+    return Math.min(100, Math.max(0, Math.round(n * 100) / 100));
+};
+
+/**
+ * Réglages d'un rôle pour un patron.
+ * Rôle de base : défauts si rien n'est enregistré. Rôle personnalisé : null s'il n'existe pas.
+ */
 export async function reglagesRole(id_utilisateur, role, db = pool) {
-    if (!ROLES_REGLABLES.includes(role)) return { modules: [], actions: [], personnalise: false };
+    const perso = estRolePerso(role);
+    if (!perso && !ROLES_REGLABLES.includes(role)) return { modules: [], actions: [], remise_max: null, personnalise: false };
     const cle = `${id_utilisateur}|${role}`;
     const c = cache.get(cle);
     if (c && c.expire > Date.now()) return c.valeur;
 
-    let valeur = { ...DEFAUTS[role], personnalise: false };
+    let valeur = perso ? null : { ...DEFAUTS[role], remise_max: null, personnalise: false };
     try {
         const [rows] = await db.query(
-            'SELECT modules, actions, date_modification FROM permissions_roles WHERE id_utilisateur = ? AND role = ? LIMIT 1',
+            'SELECT * FROM permissions_roles WHERE id_utilisateur = ? AND role = ? LIMIT 1',
             [id_utilisateur, role]
         );
         if (rows[0]) {
             valeur = {
                 modules: nettoyer(lireJson(rows[0].modules), MODULES_IDS),
                 actions: nettoyer(lireJson(rows[0].actions), ACTIONS_IDS),
+                remise_max: lireRemise(rows[0].remise_max),
                 personnalise: true,
                 date_modification: rows[0].date_modification,
+                ...(perso ? { libelle: rows[0].libelle || 'Rôle', role_base: rows[0].role_base || 'caissier' } : {}),
             };
         }
     } catch (e) {
-        // Table absente (migration pas encore passée) : on garde les défauts
-        if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+        // Table ou colonne absente (migration pas encore passée) : on garde les défauts
+        if (!['ER_NO_SUCH_TABLE', 'ER_BAD_FIELD_ERROR'].includes(e.code)) throw e;
     }
     cache.set(cle, { valeur, expire: Date.now() + DUREE_CACHE });
     return valeur;
 }
 
-/** Les 3 rôles d'un patron, pour la page de réglage */
+/** Rôles personnalisés d'un patron, avec le nombre d'employés qui les ont */
+export async function rolesPersonnalises(id_utilisateur) {
+    try {
+        const [rows] = await pool.query(
+            `SELECT pr.*, (SELECT COUNT(*) FROM employes e WHERE e.id_utilisateur = pr.id_utilisateur AND CAST(e.role_personnalise AS BINARY) = CAST(pr.role AS BINARY)) AS nb_employes
+             FROM permissions_roles pr
+             WHERE pr.id_utilisateur = ? AND pr.role LIKE 'perso\\_%'
+             ORDER BY pr.libelle`,
+            [id_utilisateur]
+        );
+        return rows.map((r) => ({
+            role: r.role,
+            libelle: r.libelle || 'Rôle',
+            role_base: r.role_base || 'caissier',
+            modules: nettoyer(lireJson(r.modules), MODULES_IDS),
+            actions: nettoyer(lireJson(r.actions), ACTIONS_IDS),
+            remise_max: lireRemise(r.remise_max),
+            personnalise: true,
+            nb_employes: Number(r.nb_employes) || 0,
+        }));
+    } catch (e) {
+        if (['ER_NO_SUCH_TABLE', 'ER_BAD_FIELD_ERROR'].includes(e.code)) return [];
+        throw e;
+    }
+}
+
+/** Les 3 rôles de base d'un patron, pour la page de réglage */
 export async function reglagesTousRoles(id_utilisateur) {
     const roles = {};
     for (const r of ROLES_REGLABLES) roles[r] = await reglagesRole(id_utilisateur, r);
     return roles;
 }
 
-export async function enregistrerRole(id_utilisateur, role, { modules, actions }) {
-    if (!ROLES_REGLABLES.includes(role)) {
-        const e = new Error('Rôle inconnu'); e.statusCode = 400; throw e;
-    }
+export async function enregistrerRole(id_utilisateur, role, { modules, actions, remise_max, libelle }) {
+    const perso = estRolePerso(role);
+    if (!perso && !ROLES_REGLABLES.includes(role)) throw erreurRole('Rôle inconnu');
     const m = nettoyer(modules, MODULES_IDS);
     const a = nettoyer(actions, ACTIONS_IDS);
-    await pool.query(
-        `INSERT INTO permissions_roles (id_utilisateur, role, modules, actions)
-         VALUES (?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE modules = VALUES(modules), actions = VALUES(actions)`,
-        [id_utilisateur, role, JSON.stringify(m), JSON.stringify(a)]
-    );
+    const rm = lireRemise(remise_max);
+    if (perso) {
+        const nom = String(libelle || '').trim().slice(0, 60);
+        const [r] = await pool.query(
+            `UPDATE permissions_roles SET modules = ?, actions = ?, remise_max = ?${nom ? ', libelle = ?' : ''}
+             WHERE id_utilisateur = ? AND role = ?`,
+            [JSON.stringify(m), JSON.stringify(a), rm, ...(nom ? [nom] : []), id_utilisateur, role]
+        );
+        if (!r.affectedRows) throw erreurRole('Rôle introuvable', 404);
+    } else {
+        await pool.query(
+            `INSERT INTO permissions_roles (id_utilisateur, role, modules, actions, remise_max)
+             VALUES (?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE modules = VALUES(modules), actions = VALUES(actions), remise_max = VALUES(remise_max)`,
+            [id_utilisateur, role, JSON.stringify(m), JSON.stringify(a), rm]
+        );
+    }
     cache.delete(`${id_utilisateur}|${role}`);
 }
 
+/** Rôle de base : retour aux réglages par défaut. Rôle personnalisé : suppression (s'il n'est plus utilisé). */
 export async function retablirRole(id_utilisateur, role) {
-    if (!ROLES_REGLABLES.includes(role)) {
-        const e = new Error('Rôle inconnu'); e.statusCode = 400; throw e;
+    if (estRolePerso(role)) {
+        const [[{ nb }]] = await pool.query(
+            'SELECT COUNT(*) AS nb FROM employes WHERE id_utilisateur = ? AND role_personnalise = ?',
+            [id_utilisateur, role]
+        );
+        if (nb > 0) {
+            throw erreurRole(`${nb} employé${nb > 1 ? 's ont' : ' a'} encore ce rôle. Donnez-leur un autre rôle avant de le supprimer.`, 409);
+        }
+        await pool.query('DELETE FROM permissions_roles WHERE id_utilisateur = ? AND role = ?', [id_utilisateur, role]);
+        cache.delete(`${id_utilisateur}|${role}`);
+        return;
     }
+    if (!ROLES_REGLABLES.includes(role)) throw erreurRole('Rôle inconnu');
     await pool.query('DELETE FROM permissions_roles WHERE id_utilisateur = ? AND role = ?', [id_utilisateur, role]);
     cache.delete(`${id_utilisateur}|${role}`);
+}
+
+/** Nouveau rôle personnalisé, qui part des droits actuels d'un rôle de base */
+export async function creerRolePerso(id_utilisateur, { libelle, role_base }) {
+    const nom = String(libelle || '').trim().slice(0, 60);
+    if (nom.length < 2) throw erreurRole('Donnez un nom au rôle (au moins 2 lettres)');
+    const base = ROLES_REGLABLES.includes(role_base) ? role_base : 'caissier';
+    const existants = await rolesPersonnalises(id_utilisateur);
+    if (existants.length >= 20) throw erreurRole('Vous avez déjà 20 rôles personnalisés');
+    const norme = (t) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if ([...existants.map((r) => r.libelle), ...Object.values(LIBELLES_ROLES)].some((l) => norme(l) === norme(nom))) {
+        throw erreurRole('Un rôle porte déjà ce nom');
+    }
+    const depart = await reglagesRole(id_utilisateur, base);
+    const cle = `perso_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+    await pool.query(
+        `INSERT INTO permissions_roles (id_utilisateur, role, modules, actions, remise_max, libelle, role_base)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [id_utilisateur, cle, JSON.stringify(depart.modules), JSON.stringify(depart.actions), depart.remise_max, nom, base]
+    );
+    return { role: cle, ...(await reglagesRole(id_utilisateur, cle)), nb_employes: 0, perso: true };
 }
 
 // ------------------------------------------------------------
@@ -194,8 +281,17 @@ export async function permissionsDe(req) {
     if (estProprietaire(req)) {
         req.permissions = TOUT;
     } else {
-        const r = await reglagesRole(req.user.id_utilisateur, req.user.role);
-        req.permissions = { tout: false, modules: r.modules, actions: r.actions };
+        // Rôle personnalisé s'il existe toujours, sinon le rôle de base
+        const perso = req.user.role_personnalise ? await reglagesRole(req.user.id_utilisateur, req.user.role_personnalise) : null;
+        const r = perso || (await reglagesRole(req.user.id_utilisateur, req.user.role));
+        req.permissions = {
+            tout: false,
+            modules: r.modules,
+            actions: r.actions,
+            remise_max: r.remise_max ?? null,
+            role_personnalise: perso ? req.user.role_personnalise : null,
+            libelle_role: perso ? perso.libelle : LIBELLES_ROLES[req.user.role] || req.user.role,
+        };
     }
     return req.permissions;
 }

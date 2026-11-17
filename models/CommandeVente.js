@@ -1,4 +1,5 @@
 // models/CommandeVente.js
+import { numeroterRecu } from '../utils/recu.js';
 import { pool } from '../config/db.js';
 import { prochainNumero, prefixeDuMois, estDoublonNumero, attendreUnPeu } from '../utils/numerotation.js';
 import MouvementStock from './MouvementStock.js';
@@ -107,6 +108,9 @@ class CommandeVente {
                 // --- Récupérer quantite_base + prix depuis unites_vente ---
                 let qteBase = parseFloat(quantite_base) || 1;
                 let prixUnitaire = parseFloat(prix_vente) || 0;
+                let remiseLigne = parseFloat(remise) || 0;
+                // Prix du catalogue (unité de vente, sinon produit) : gardé sur la ligne pour la trace
+                let prixCatalogue = parseFloat(produitRows[0].prix_vente) || 0;
 
                 if (id_unite_vente) {
                     const [uvRows] = await connection.execute(
@@ -117,6 +121,7 @@ class CommandeVente {
                     );
                     if (uvRows.length > 0) {
                         qteBase = parseFloat(uvRows[0].quantite_base) || 1;
+                        if (parseFloat(uvRows[0].prix_vente) > 0) prixCatalogue = parseFloat(uvRows[0].prix_vente);
                         // Utiliser le prix de l'unité de vente choisie si non fourni
                         if (!prixUnitaire || prixUnitaire === 0) {
                             prixUnitaire = parseFloat(uvRows[0].prix_vente) || 0;
@@ -131,6 +136,27 @@ class CommandeVente {
 
                 if (prixUnitaire <= 0) {
                     throw new Error(`Le prix de vente du produit "${produitRows[0].nom}" n'est pas défini`);
+                }
+
+                // --- Baisse de prix maximum du rôle (Rôles et permissions) ---
+                const remiseMax = data.remise_max === null || data.remise_max === undefined ? null : parseFloat(data.remise_max);
+                if (remiseMax !== null && !Number.isNaN(remiseMax) && prixCatalogue > 0) {
+                    const effectif = prixUnitaire * (1 - remiseLigne / 100);
+                    const plancher = Math.ceil(prixCatalogue * (1 - remiseMax / 100));
+                    if (effectif < plancher - 0.5) {
+                        if (data.limiter_prix) {
+                            // Vente hors ligne déjà faite : on la garde, au prix le plus bas permis
+                            prixUnitaire = plancher;
+                            remiseLigne = 0;
+                        } else {
+                            throw erreurMetier(
+                                `Prix trop bas pour « ${produitRows[0].nom} » : baisse maximum ${remiseMax.toLocaleString('fr-FR')} %, ` +
+                                `soit au moins ${plancher.toLocaleString('fr-FR').replace(/\u202f|\u00a0/g, ' ')} FCFA`,
+                                400,
+                                'PRIX_TROP_BAS'
+                            );
+                        }
+                    }
                 }
 
                 // --- Quantité totale en unité de base ---
@@ -157,7 +183,8 @@ class CommandeVente {
                     quantite: parseFloat(quantite),
                     quantite_totale_base: qteTotaleBase,
                     prix_vente: prixUnitaire,
-                    remise: parseFloat(remise) || 0
+                    remise: remiseLigne,
+                    prix_catalogue: prixCatalogue > 0 ? prixCatalogue : null
                 });
             }
 
@@ -191,8 +218,9 @@ class CommandeVente {
                     [result] = await connection.execute(
                         `INSERT INTO commandes_vente (
                             id_utilisateur, numero_commande, date_commande,
-                            nomclient, telephone, id_client, statut, montant_total, notes
-                        ) VALUES (?, ?, ?, ?, ?, ?, 'en_attente', 0.00, ?)`,
+                            nomclient, telephone, id_client, statut, montant_total, notes,
+                            vendeur_nom, vendeur_id_employe
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'en_attente', 0.00, ?, ?, ?)`,
                         [
                             id_utilisateur,
                             numero_commande,
@@ -200,7 +228,9 @@ class CommandeVente {
                             nomVente,
                             telVente,
                             fiche?.id_client || null,
-                            notes || null
+                            notes || null,
+                            data.vendeur?.nom ? String(data.vendeur.nom).slice(0, 150) : null,
+                            data.vendeur?.id_employe || null
                         ]
                     );
                     break;
@@ -222,8 +252,8 @@ await connection.execute(
     `INSERT INTO ligne_commande_vente (
         id_commande, id_produit,
         id_unite_vente, nom_unite_vente, quantite_base,
-        quantite, prix_vente, remise
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,  
+        quantite, prix_vente, remise, prix_catalogue
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
         id_commande,
         lc.id_produit,
@@ -232,7 +262,8 @@ await connection.execute(
         lc.quantite_base,
         lc.quantite,
         lc.prix_vente,
-        lc.remise
+        lc.remise,
+        lc.prix_catalogue
     ]
 );
 
@@ -753,6 +784,8 @@ await connection.execute(
             );
 
             const id_paiement = result.insertId;
+            // Numéro de reçu fixe (REC-000001…)
+            if (parseFloat(montant) > 0 && mode_paiement !== 'avoir') await numeroterRecu(connection, id_utilisateur, id_paiement);
 
             const nouveauTotalPaye = totalPaye + parseFloat(montant);
             let nouveauStatut = 'en_attente';

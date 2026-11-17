@@ -1,4 +1,5 @@
 // controllers/EmployeController.js
+import { estRolePerso, reglagesRole } from '../utils/permissions.js';
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import Employe, { CHAMPS_FICHE } from '../models/Employe.js';
 import { urlPhoto, supprimerPhoto } from '../middleware/uploadPhotoProfil.js';
@@ -102,6 +103,15 @@ function presenter(emp, req) {
     return reste;
 }
 
+
+// Rôle choisi dans la fiche : rôle de base, ou rôle personnalisé du patron
+async function resoudreRole(id_utilisateur, roleName) {
+    if (!estRolePerso(roleName)) return { roleName, role_personnalise: null };
+    const r = await reglagesRole(id_utilisateur, roleName);
+    if (!r) return { erreur: "Ce rôle n'existe plus. Choisissez-en un autre." };
+    return { roleName: r.role_base || 'caissier', role_personnalise: roleName };
+}
+
 class EmployeController {
     /**
      * ============================================================
@@ -113,7 +123,11 @@ class EmployeController {
     static async create(req, res) {
         try { 
             const id_utilisateur = req.user.id_utilisateur;
-            const { fullname, telephone, password, roleName, id_magasin } = req.body;
+            const { fullname, telephone, password, id_magasin } = req.body;
+            // Rôle personnalisé (« perso_… ») : on garde son rôle de base pour le reste du logiciel
+            const choixRole = req.body.roleName ? await resoudreRole(req.user.id_utilisateur, req.body.roleName) : null;
+            if (choixRole?.erreur) return res.status(400).json({ success: false, message: choixRole.erreur });
+            const roleName = choixRole?.roleName;
             const { fiche, erreur: erreurFiche } = lireFiche(req.body, estPatron(req));
             if (erreurFiche) return res.status(400).json({ success: false, message: erreurFiche });
 
@@ -198,7 +212,8 @@ class EmployeController {
                 fullname,
                 telephone: cleanedTelephone,
                 password,
-                roleName
+                roleName,
+                role_personnalise: choixRole?.role_personnalise || null
             });
 
             if (Object.keys(fiche).length) await Employe.update(employeId, id_utilisateur, fiche);
@@ -296,7 +311,11 @@ static async update(req, res) {
     try {
         const { id } = req.params;
         const id_utilisateur = req.user.id_utilisateur;
-        const { fullname, telephone, roleName, id_magasin, actif, password } = req.body;
+        const { fullname, telephone, id_magasin, actif, password } = req.body;
+        // Rôle personnalisé (« perso_… ») : on garde son rôle de base pour le reste du logiciel
+        const choixRole = req.body.roleName ? await resoudreRole(id_utilisateur, req.body.roleName) : null;
+        if (choixRole?.erreur) return res.status(400).json({ success: false, message: choixRole.erreur });
+        const roleName = choixRole ? choixRole.roleName : undefined;
         const { fiche, erreur: erreurFiche } = lireFiche(req.body, estPatron(req));
         if (erreurFiche) return res.status(400).json({ success: false, message: erreurFiche });
         //                                                                   ^^^^^^^^ AJOUT
@@ -344,6 +363,7 @@ static async update(req, res) {
             fullname,
             telephone: telephoneNormalise,
             roleName,
+            ...(choixRole ? { role_personnalise: choixRole.role_personnalise } : {}),
             id_magasin,
             actif,
             password: password || undefined,  // ✅ AJOUT

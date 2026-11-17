@@ -93,7 +93,7 @@ class HorsLigne {
      * → { id_local, statut: 'synchronisee' | 'deja_recue' | 'en_cours', id_commande, numero_commande,
      *     numero_facture, ruptures: [...], avertissements: [...] }
      */
-    static async synchroniser(idUtilisateur, v, vendeur) {
+    static async synchroniser(idUtilisateur, v, vendeur, options = {}) {
         const paiements = HorsLigne._valider(v);
         const idLocal = String(v.id_local);
         const dateLocale = dateSQL(v.date_vente) || dateSQL(Date.now());
@@ -189,6 +189,10 @@ class HorsLigne {
                 mode_paiement: MODES.includes(v.mode_paiement) ? v.mode_paiement : 'especes',
                 date_echeance: v.date_echeance || null,
                 autoriser_stock_negatif: true,
+                // Baisse de prix maximum du rôle : la vente est déjà faite, on ramène au prix le plus bas permis
+                remise_max: options.remise_max ?? null,
+                limiter_prix: true,
+                vendeur: { nom: vendeur?.nom || null, id_employe: vendeur?.type === 'employe' ? vendeur.id : null },
                 lignes: v.lignes.map((l) => ({
                     id_produit: Number(l.id_produit),
                     id_unite_vente: l.id_unite_vente || null,

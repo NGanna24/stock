@@ -147,8 +147,10 @@ class EmplacementMagasin {
 
     // Vérifie l'emplacement choisi pour un produit (même boutique / même entrepôt) ; renvoie l'id (ou null)
     static async verifierPourProduit(idUtilisateur, id, idEntrepot = null) {
-        if (id === null || id === '' || id === 0 || id === '0') return null;
-        const e = await this.trouver(idUtilisateur, Number(id), idEntrepot);
+        // Rien de choisi : champ absent, vide, 0, ou texte « undefined » / « null » envoyé par le formulaire
+        const n = Number(id);
+        if (id === undefined || id === null || !Number.isInteger(n) || n <= 0) return null;
+        const e = await this.trouver(idUtilisateur, n, idEntrepot);
         if (!e) throw fail('Emplacement introuvable');
         return e.id_emplacement;
     }

@@ -1,4 +1,5 @@
 // models/Paiement.js
+import { numeroterRecu } from '../utils/recu.js';
 import { pool } from '../config/db.js';
 
 class Paiement {
@@ -42,9 +43,12 @@ class Paiement {
                             OR cv.telephone LIKE ?
                             OR cv.numero_commande LIKE ?
                             OR fv.numero_facture LIKE ?
-                            OR p.reference LIKE ?)`;
+                            OR p.reference LIKE ?
+                            OR p.numero_recu = ?)`;
                 const s = `%${filters.search}%`;
-                params.push(s, s, s, s, s);
+                // « REC-000028 », « rec 28 » ou « 28 » retrouvent le reçu n° 28
+                const nRecu = /^\s*(rec[\s-]*)?\d{1,9}\s*$/i.test(String(filters.search)) ? parseInt(String(filters.search).replace(/\D/g, ''), 10) : -1;
+                params.push(s, s, s, s, s, nRecu);
             }
 
             if (filters.id_facture) {
@@ -318,6 +322,8 @@ class Paiement {
             );
 
             const id_paiement = result.insertId;
+            // Numéro de reçu fixe (REC-000001…)
+            if (parseFloat(montant) > 0 && mode_paiement !== 'avoir') await numeroterRecu(connection, id_utilisateur, id_paiement);
 
             // Mettre à jour le statut de la facture
             const nouveauTotalPaye = totalPaye + montantNum;

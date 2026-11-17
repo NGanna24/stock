@@ -10,6 +10,7 @@
 //     et ne peut pas dépasser ce qui reste à payer ;
 //   - supprimer une recette recalcule le statut de la facture ;
 //   - un remboursement se gère depuis son retour client, pas d'ici.
+import { numeroterRecu } from '../utils/recu.js';
 import { pool } from '../config/db.js';
 
 import { CODES_MODES } from '../utils/modesPaiement.js';
@@ -58,7 +59,7 @@ class Recette {
 
         const [rows] = await pool.query(
             `SELECT
-                pa.id_paiement, pa.date_paiement, pa.montant, pa.mode_paiement, pa.note, pa.reference,
+                pa.id_paiement, pa.date_paiement, pa.montant, pa.mode_paiement, pa.note, pa.reference, pa.numero_recu,
                 pa.date_creation,
                 fv.id_facture, fv.numero_facture, fv.statut AS statut_facture, fv.montant_total AS montant_facture,
                 cv.id_commande, cv.numero_commande, cv.nomclient, cv.telephone, cv.statut AS statut_commande,
@@ -218,6 +219,8 @@ class Recette {
                  data.note ? String(data.note).slice(0, 1000) : null,
                  data.reference ? String(data.reference).slice(0, 100) : null]
             );
+            // Numéro de reçu fixe (REC-000001…)
+            if (montant > 0 && mode !== 'avoir') await numeroterRecu(connection, id_utilisateur, result.insertId);
 
             await connection.execute(
                 'UPDATE factures_vente SET statut = ? WHERE id_facture = ? AND id_utilisateur = ?',
