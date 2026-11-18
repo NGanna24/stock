@@ -675,4 +675,197 @@ export const toolDefinitions = [
       },
     },
   },
+  // ============================================================
+  // OÙ EST RANGÉ UN PRODUIT
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'emplacement_produit',
+      description: "Dit OÙ est rangé un produit dans la boutique (emplacement, rayon, étagère). Ex: 'où se trouve l'huile 5L ?', 'les bougies sont où ?', 'où j'ai mis les filtres ?'.",
+      parameters: {
+        type: 'object',
+        properties: { nom: { type: 'string', description: 'Nom du produit tel que dit' } },
+        required: ['nom'],
+      },
+    },
+  },
+
+  // ============================================================
+  // CLIENTS QUI DOIVENT DE L'ARGENT
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'clients_qui_doivent',
+      description: "Liste les CLIENTS QUI DOIVENT de l'argent (crédits, dettes clients) avec le montant de chacun et le total. Ex: 'qui me doit ?', 'les clients qui doivent', 'combien on me doit ?', 'est-ce que Koffi me doit ?', 'les crédits'.",
+      parameters: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: "Nom ou téléphone d'un client précis, seulement si la question porte sur lui" },
+          limite: { type: 'number', description: 'Nombre de clients à citer (5 par défaut)' },
+        },
+      },
+    },
+  },
+
+  // ============================================================
+  // ARGENT ENCAISSÉ
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'encaissements_periode',
+      description: "Dit combien d'argent a été ENCAISSÉ (vraiment reçu) sur une période, par moyen de paiement : espèces, Wave, Orange Money, MTN, Moov. Ex: 'combien j'ai encaissé aujourd'hui ?', 'l'argent rentré hier', 'combien en Wave cette semaine ?'. Différent du chiffre d'affaires : une vente à crédit n'est pas encaissée.",
+      parameters: {
+        type: 'object',
+        properties: {
+          date_debut: { type: 'string', description: "AAAA-MM-JJ (aujourd'hui si absent)" },
+          date_fin: { type: 'string', description: "AAAA-MM-JJ (aujourd'hui si absent)" },
+        },
+      },
+    },
+  },
+
+  // ============================================================
+  // ACTION : préparer une commande au fournisseur (rien n'est enregistré sans confirmation)
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'preparer_commande_achat',
+      description:
+        "Prépare une COMMANDE AU FOURNISSEUR (réapprovisionnement) quand l'utilisateur veut commander ou acheter des produits pour la boutique. Ex: 'commande 10 cartons d'huile chez Yuxing', 'il faut commander des bougies', 'commande ce qui manque'. " +
+        "La commande n'est PAS enregistrée : l'application affiche un récapitulatif à confirmer. Une ligne par produit et par unité. " +
+        "Pour 'commande ce qui manque' : appelle d'abord produits_stock_bas ou produits_en_rupture, puis mets ces produits dans les lignes (quantité vide = quantité proposée).",
+      parameters: {
+        type: 'object',
+        properties: {
+          fournisseur: { type: 'string', description: 'Nom du fournisseur si dit (sinon le fournisseur habituel des produits)' },
+          lignes: {
+            type: 'array',
+            description: 'Produits à commander',
+            items: {
+              type: 'object',
+              properties: {
+                produit: { type: 'string', description: 'Nom du produit tel que dit' },
+                quantite: { type: 'number', description: 'Quantité dans cette unité (vide si non dite)' },
+                unite: { type: 'string', description: "Unité dite (ex: 'carton', 'pièce'). Vide si non précisée." },
+                prix_unitaire: { type: 'number', description: "Prix d'achat par unité SEULEMENT si l'utilisateur le donne" },
+              },
+              required: ['produit'],
+            },
+          },
+        },
+        required: ['lignes'],
+      },
+    },
+  },
+  // ============================================================
+  // LA CAISSE
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'etat_caisse',
+      description: "Dit combien il y a d'espèces DANS LA CAISSE (tiroir) maintenant, si la caisse est ouverte, depuis quand et par qui, ou la dernière fermeture. Ex: 'combien il y a dans la caisse ?', 'la caisse est ouverte ?', 'combien je dois trouver dans le tiroir ?', 'la caisse d'hier soir'.",
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+
+  // ============================================================
+  // CE QUE JE DOIS AUX FOURNISSEURS
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'dettes_fournisseurs',
+      description: "Dit combien JE DOIS AUX FOURNISSEURS (dettes fournisseurs, crédit chez eux), le total et par fournisseur, ou pour un fournisseur précis (avec son plafond et le crédit encore disponible). Ex: 'je dois combien à Yuxing ?', 'mes dettes fournisseurs', 'à qui je dois de l'argent ?'.",
+      parameters: {
+        type: 'object',
+        properties: { fournisseur: { type: 'string', description: 'Nom du fournisseur, seulement si la question porte sur lui' } },
+      },
+    },
+  },
+
+  // ============================================================
+  // VENTES PAR VENDEUR
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'ventes_par_vendeur',
+      description: "Ventes de chaque VENDEUR (employé) sur une période : qui a le plus vendu, combien un vendeur a vendu. Ex: 'qui a le plus vendu aujourd'hui ?', 'combien Awa a vendu cette semaine ?', 'les ventes des vendeurs'.",
+      parameters: {
+        type: 'object',
+        properties: {
+          vendeur: { type: 'string', description: "Nom du vendeur, seulement si la question porte sur lui" },
+          date_debut: { type: 'string', description: "AAAA-MM-JJ (aujourd'hui si absent)" },
+          date_fin: { type: 'string', description: "AAAA-MM-JJ (aujourd'hui si absent)" },
+        },
+      },
+    },
+  },
+
+  // ============================================================
+  // SUIVI DES COMMANDES FOURNISSEUR
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'suivi_commandes_fournisseur',
+      description: "Suivi des COMMANDES PASSÉES AUX FOURNISSEURS : arrivées ou pas, ce qui reste à recevoir. Ex: 'ma commande chez Yuxing est arrivée ?', 'qu'est-ce qui reste à recevoir ?', 'mes commandes en attente chez les fournisseurs'.",
+      parameters: {
+        type: 'object',
+        properties: {
+          fournisseur: { type: 'string', description: 'Nom du fournisseur, seulement si la question porte sur lui' },
+          inclure_recues: { type: 'boolean', description: 'true pour voir aussi les commandes déjà arrivées (30 derniers jours)' },
+        },
+      },
+    },
+  },
+  // ============================================================
+  // STOCK À L'ENTREPÔT
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'stock_entrepot',
+      description: "Stock à l'ENTREPÔT (pas en boutique) : combien il reste d'un produit à l'entrepôt, ou le résumé de l'entrepôt (ruptures, presque finis). Ex: 'il reste combien d'huile à l'entrepôt ?', 'qu'est-ce qui manque à l'entrepôt ?', 'y a des bougies au dépôt ?'.",
+      parameters: {
+        type: 'object',
+        properties: { produit: { type: 'string', description: 'Nom du produit, si la question porte sur un produit précis' } },
+      },
+    },
+  },
+
+  // ============================================================
+  // TRANSFERTS ENTREPÔT → BOUTIQUE
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'transferts_en_cours',
+      description: "Transferts de marchandise de l'ENTREPÔT vers la BOUTIQUE : ce qui est en attente ou en route, ce qui est arrivé ou refusé, et les demandes à valider pour mon entrepôt. Ex: 'qu'est-ce qui est en route vers la boutique ?', 'mon transfert est validé ?', 'des demandes de transfert à valider ?'.",
+      parameters: {
+        type: 'object',
+        properties: { jours: { type: 'number', description: 'Combien de jours en arrière regarder (7 par défaut)' } },
+      },
+    },
+  },
+
+  // ============================================================
+  // CLIENTS À RELANCER
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'clients_a_relancer',
+      description: "Clients À RELANCER aujourd'hui : ceux qui sont en retard de paiement et qu'on n'a pas relancés ces derniers jours, du plus urgent au moins urgent. Ex: 'qui je dois relancer ?', 'qui appeler pour l'argent ?', 'les relances du jour'.",
+      parameters: {
+        type: 'object',
+        properties: { limite: { type: 'number', description: 'Nombre de clients à citer (5 par défaut)' } },
+      },
+    },
+  },
 ];

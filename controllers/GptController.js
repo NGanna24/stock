@@ -95,7 +95,8 @@ class GptController {
         message,
         req.workspaceId,
         req.user,
-        safeHistory
+        safeHistory,
+        { actions: req.body?.actions }
       );
 
       console.log(
@@ -138,7 +139,7 @@ GptController.voix = async (req, res) => {
     if (Gemini.disponible()) {
       try {
         const audio = Gemini.audioDepuisFichier(filePath, req.file.mimetype);
-        result = await GptChatService.chat('', req.workspaceId, req.user, historique, { audio, vocabulaire });
+        result = await GptChatService.chat('', req.workspaceId, req.user, historique, { audio, vocabulaire, actions: req.body?.actions });
       } catch (e) {
         console.warn('[GptController.voix] voix directe impossible, passage par la dictée :', e.message);
         result = null;
@@ -149,7 +150,7 @@ GptController.voix = async (req, res) => {
       if (!t.text || !t.text.trim()) {
         return res.json({ success: false, message: "Je n'ai rien entendu. Parle plus près du téléphone." });
       }
-      result = await GptChatService.chat(t.text, req.workspaceId, req.user, historique);
+      result = await GptChatService.chat(t.text, req.workspaceId, req.user, historique, { actions: req.body?.actions });
       result.question = t.text;
     }
     if (result.question === '') {

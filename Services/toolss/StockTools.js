@@ -2,6 +2,11 @@
 import { pool } from '../../config/db.js';
 import { preparer_vente } from './ActionsVente.js';
 import { chercherProduits } from './Recherche.js';
+import {
+  emplacement_produit, clients_qui_doivent, encaissements_periode, preparer_commande_achat,
+  etat_caisse, dettes_fournisseurs, ventes_par_vendeur, suivi_commandes_fournisseur,
+  stock_entrepot, transferts_en_cours, clients_a_relancer,
+} from './OutilsBoutique.js';
 
 // ============================================================
 // UTILITAIRE : sécurité numérique
@@ -1603,8 +1608,21 @@ export const toolExecutors = {
   rapport_ventes_complet,
   rapport_stocks_complet,
 
+  // Questions de tous les jours
+  emplacement_produit,
+  clients_qui_doivent,
+  encaissements_periode,
+  etat_caisse,
+  dettes_fournisseurs,
+  ventes_par_vendeur,
+  suivi_commandes_fournisseur,
+  stock_entrepot,
+  transferts_en_cours,
+  clients_a_relancer,
+
   // Actions (brouillon à confirmer dans l'application)
   preparer_vente,
+  preparer_commande_achat,
 
   // No-op
   aucune_action,

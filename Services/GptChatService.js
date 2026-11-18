@@ -33,6 +33,8 @@ const OUTILS_PAR_ROLE = {
     'commandes_par_periode', 'commandes_par_statut', 'rechercher_client', 'top_clients',
     'details_client', 'info_boutique', 'lister_categories', 'lister_marques',
     'retours_clients_recents', 'preparer_vente',
+    'emplacement_produit', 'clients_qui_doivent', 'encaissements_periode', 'etat_caisse',
+    'stock_entrepot', 'clients_a_relancer',
   ],
   magasinier: [
     'aucune_action', 'rechercher_produit', 'lister_produits', 'details_produit',
@@ -41,6 +43,8 @@ const OUTILS_PAR_ROLE = {
     'rapport_stocks_complet', 'lister_fournisseurs', 'details_fournisseur',
     'lister_categories', 'lister_marques', 'derniers_mouvements', 'inventaires_recents',
     'details_inventaire', 'info_boutique',
+    'emplacement_produit', 'preparer_commande_achat', 'suivi_commandes_fournisseur',
+    'stock_entrepot', 'transferts_en_cours',
   ],
 };
 // Le gestionnaire voit tout sauf l'administration (employés, magasins)
@@ -167,6 +171,16 @@ Ta réponse est LUE À VOIX HAUTE à quelqu'un qui ne lit peut-être pas.
 ## Les données
 Tu ne sais RIEN du magasin sans appeler un outil. Ne devine jamais un chiffre.
 - Toute question sur un produit, le stock, les ventes, un client, un fournisseur, les dettes ou les dépenses : appelle l'outil adapté.
+- « Où est… », « c'est rangé où » : emplacement_produit. Si l'emplacement n'est pas noté, dis-le et explique où le noter.
+- « Qui me doit », « les crédits », « combien on me doit », « est-ce que Koffi me doit » : clients_qui_doivent.
+- « Combien j'ai encaissé », « l'argent rentré », « combien en Wave / en espèces » : encaissements_periode (argent vraiment reçu). Le chiffre d'affaires (chiffre_affaires) compte aussi les ventes à crédit : ne confonds pas les deux.
+- « Combien dans la caisse », « la caisse est ouverte » : etat_caisse (espèces du tiroir ; le mobile money est à part).
+- « Je dois combien à… », « mes dettes fournisseurs » : dettes_fournisseurs. Ne confonds pas avec clients_qui_doivent (l'argent qu'on te doit).
+- « Qui a le plus vendu », « combien Awa a vendu » : ventes_par_vendeur.
+- « Ma commande est arrivée ? », « ce qui reste à recevoir » : suivi_commandes_fournisseur.
+- Stock « à l'entrepôt » ou « au dépôt » : stock_entrepot. Sans ce mot, le stock demandé est celui de la boutique.
+- « En route vers la boutique », « mon transfert », « demandes à valider » : transferts_en_cours.
+- « Qui relancer », « qui appeler pour l'argent » : clients_a_relancer (les plus urgents). Pour juste savoir qui doit combien : clients_qui_doivent.
 - Résultat vide : dis-le simplement et propose une autre formulation.
 - Plusieurs produits possibles (champ autres_produits_proches) : demande lequel en citant les noms.
 - Question trop vague (« combien ? ») : demande une précision avec deux exemples concrets.
@@ -188,6 +202,12 @@ Quand on te demande de vendre (« vends 2 cartons d'huile à Awa », « mets 3 b
 - La vente n'est PAS enregistrée : résume en une phrase puis dis « Vérifie et touche Confirmer. » Ne dis jamais que c'est fait.
 - S'il y a des problèmes (produit introuvable, stock insuffisant, prix manquant), dis-les et demande quoi corriger.
 - Paiement seulement si l'utilisateur dit que le client a payé (espèces par défaut).
+
+## Commander au fournisseur
+Quand on te demande de commander ou d'acheter des produits pour la boutique (« commande 10 cartons d'huile », « commande ce qui manque ») :
+- Appelle preparer_commande_achat. Pour « ce qui manque », cherche d'abord les produits en stock bas ou en rupture, puis mets-les dans la commande.
+- La commande n'est PAS envoyée : résume en une phrase puis dis « Vérifie et touche Confirmer. » Ne dis jamais que c'est fait.
+- Si le fournisseur manque ou si un produit est flou, demande la précision.
 
 ## Droits
 Tu n'as accès qu'aux informations permises pour un ${LIBELLE_ROLE[role] || role}. Si on te demande autre chose (bénéfices, prix d'achat, employés…) et que tu n'as pas l'outil, réponds gentiment que ce n'est pas disponible avec ce compte.
@@ -213,7 +233,7 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
    *   audio : la voix est envoyée telle quelle (Gemini seulement)
    */
   async chat(userMessage, workspaceId, user = {}, history = [], options = {}) {
-    const { audio = null, vocabulaire = '', sansSecours = false } = options;
+    const { audio = null, vocabulaire = '', sansSecours = false, actions = '' } = options;
     if (audio) userMessage = 'Message vocal ci-dessus : réponds en commençant par la ligne ENTENDU:';
     if (!userMessage || typeof userMessage !== 'string') {
       throw new Error('Message utilisateur requis');
@@ -223,7 +243,12 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
     }
 
     const role = roleDe(user);
-    const outils = outilsAutorises(role);
+    // Les commandes fournisseur ne sont proposées qu'aux versions de l'application qui savent les afficher
+    // (une ancienne version prendrait le brouillon pour une vente)
+    const actionsAcceptees = String(actions || '').split(',').map((x) => x.trim());
+    const outils = outilsAutorises(role).filter(
+      (t) => t.function.name !== 'preparer_commande_achat' || actionsAcceptees.includes('commande_achat')
+    );
     const nomsPermis = new Set(outils.map((t) => t.function.name));
     const masquerSensible = role === 'caissier';
     const boutique = await this.nomBoutique(workspaceId);
