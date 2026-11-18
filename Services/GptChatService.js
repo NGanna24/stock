@@ -125,12 +125,18 @@ class GptChatService {
   }
 
   async nomBoutique(workspaceId) {
+    // Gardé 10 minutes en mémoire : inutile de le relire à chaque question
+    this._boutiques ||= new Map();
+    const connu = this._boutiques.get(workspaceId);
+    if (connu && connu.expire > Date.now()) return connu.valeur;
     try {
       const [[m]] = await pool.execute(
         'SELECT nom_commercial, ville FROM magasins WHERE id_utilisateur = ? ORDER BY id_magasin LIMIT 1',
         [workspaceId]
       );
-      return m ? { nom: m.nom_commercial, ville: m.ville } : null;
+      const valeur = m ? { nom: m.nom_commercial, ville: m.ville } : null;
+      this._boutiques.set(workspaceId, { valeur, expire: Date.now() + 10 * 60 * 1000 });
+      return valeur;
     } catch {
       return null;
     }
@@ -284,7 +290,17 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
         reasoning_effort: 'low',
       });
 
-    const appeler = async () => {
+    // Mesure du temps : chaque aller-retour vers l'IA et les outils
+    const debut = Date.now();
+    const tempsIA = [];
+    let tempsOutils = 0;
+    const journal = () =>
+      console.log(
+        `[Miyo] Temps : ${Date.now() - debut} ms au total · IA ${tempsIA.length} fois (${tempsIA.join(' + ')} ms) · outils ${tempsOutils} ms` +
+          (toolsUsed.length ? ` · ${toolsUsed.join(', ')}` : '')
+      );
+
+    const appelerIA = async () => {
       if (this.fournisseur !== 'gemini' && !audio) return appelGroq();
       try {
         return await Gemini.discuter({ messages, tools: outils, max_tokens: this.MAX_TOKENS });
@@ -295,6 +311,14 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
           return appelGroq();
         }
         throw e;
+      }
+    };
+    const appeler = async () => {
+      const t = Date.now();
+      try {
+        return await appelerIA();
+      } finally {
+        tempsIA.push(Date.now() - t);
       }
     };
 
@@ -309,9 +333,10 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
         const { reasoning, ...propre } = assistantMessage;
         messages.push(propre);
 
-        for (const toolCall of assistantMessage.tool_calls) {
+        // Les outils demandés en même temps sont lancés ensemble (plus d'attente l'un après l'autre)
+        const tOutils = Date.now();
+        const appels = assistantMessage.tool_calls.map((toolCall) => {
           const toolName = toolCall.function.name;
-          toolsUsed.push(toolName);
           let toolArgs = {};
           try {
             toolArgs = JSON.parse(toolCall.function.arguments || '{}');
@@ -319,21 +344,26 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
             toolArgs = {};
           }
           console.log(`[GptChatService] Outil : ${toolName}(${JSON.stringify(toolArgs)})`);
-
-          let toolResult;
-          try {
-            const executor = toolExecutors[toolName];
-            if (!nomsPermis.has(toolName)) {
-              toolResult = { error: "Cette information n'est pas disponible avec ce compte." };
-            } else if (!executor) {
-              toolResult = { error: `Outil inconnu : ${toolName}` };
-            } else {
-              toolResult = await executor(toolArgs, workspaceId, user);
+          const executor = toolExecutors[toolName];
+          const resultat = (async () => {
+            try {
+              if (!nomsPermis.has(toolName)) return { error: "Cette information n'est pas disponible avec ce compte." };
+              if (!executor) return { error: `Outil inconnu : ${toolName}` };
+              return await executor(toolArgs, workspaceId, user);
+            } catch (err) {
+              console.error(`[GptChatService] Erreur outil ${toolName}:`, err.message);
+              return { error: 'Erreur technique en récupérant les données. Réessaie ou reformule.' };
             }
-          } catch (err) {
-            console.error(`[GptChatService] Erreur outil ${toolName}:`, err.message);
-            toolResult = { error: 'Erreur technique en récupérant les données. Réessaie ou reformule.' };
-          }
+          })();
+          return { toolCall, toolName, toolArgs, resultat };
+        });
+        const resultats = await Promise.all(appels.map((a) => a.resultat));
+        tempsOutils += Date.now() - tOutils;
+
+        for (let i = 0; i < appels.length; i++) {
+          const { toolCall, toolName, toolArgs } = appels[i];
+          toolsUsed.push(toolName);
+          let toolResult = resultats[i];
 
           // Brouillon d'action (vente préparée) : pour l'application, pas pour le modèle
           if (toolResult && typeof toolResult === 'object' && '__action' in toolResult) {
@@ -352,6 +382,7 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
         assistantMessage = response.choices[0].message;
       }
 
+      journal();
       if (iterations >= this.MAX_ITERATIONS && assistantMessage.tool_calls?.length) {
         return {
           success: true,
@@ -393,7 +424,7 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
         tools_used: toolsUsed,
       };
     } catch (error) {
-      console.error('[GptChatService] Erreur:', error.message);
+      console.error(`[GptChatService] Erreur après ${Date.now() - debut} ms :`, error.message);
       throw new Error(error?.error?.message || error.message || 'Erreur de conversation');
     }
   }

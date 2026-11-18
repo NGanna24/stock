@@ -1,9 +1,20 @@
 // controllers/GptController.js
 import GptService from '../Services/GptService.js';
 import GptChatService from '../Services/GptChatService.js';
-import { vocabulaireMagasin } from '../Services/toolss/Recherche.js';
+import { vocabulaireMagasin as lireVocabulaire } from '../Services/toolss/Recherche.js';
 import Gemini from '../Services/GeminiClient.js';
 import { reponseRapide, INTENTIONS } from '../Services/ReponsesRapides.js';
+
+// Vocabulaire de la boutique (noms de produits, clients) : gardé 10 minutes en mémoire
+// au lieu de deux lectures de la base à chaque message vocal
+const vocabulaires = new Map();
+const vocabulaireMagasin = async (workspaceId) => {
+  const connu = vocabulaires.get(workspaceId);
+  if (connu && connu.expire > Date.now()) return connu.texte;
+  const texte = await lireVocabulaire(workspaceId);
+  vocabulaires.set(workspaceId, { texte, expire: Date.now() + 10 * 60 * 1000 });
+  return texte;
+};
 
 // Historique envoyé par l'application (JSON en texte quand il y a un fichier audio)
 const lireHistorique = (brut) => {

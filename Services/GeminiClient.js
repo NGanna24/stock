@@ -13,6 +13,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const API = process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta';
+// Au-delà de ce délai, on n'attend plus ce modèle : on passe au suivant
+const DELAI_MS = Number(process.env.GEMINI_DELAI_MS) || 20000;
 
 // ============================================================
 // QUOTAS GRATUITS : chaque modèle a SA propre limite (par minute et par jour).
@@ -104,15 +106,28 @@ class GeminiClient {
     for (const m of essais) {
       let rep;
       let texte = '';
+      const arret = new AbortController();
+      const minuteur = setTimeout(() => arret.abort(), DELAI_MS);
       try {
         rep = await fetch(`${API}/models/${m}:generateContent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.cle },
           body: JSON.stringify(corps(m)),
+          signal: arret.signal,
         });
         texte = await rep.text();
       } catch (e) {
+        if (e?.name === 'AbortError') {
+          // Modèle qui traîne : on le laisse reposer 2 minutes et on essaie le suivant
+          console.warn(`[Gemini] ${m} trop lent (plus de ${Math.round(DELAI_MS / 1000)} s), modèle suivant`);
+          this.repos.set(m, Date.now() + 2 * 60 * 1000);
+          derniere = new ErreurGemini('Google met trop de temps à répondre.', 504);
+          surcharge = true;
+          continue;
+        }
         throw new ErreurGemini('Pas de connexion vers Google. Réessaie.', 503);
+      } finally {
+        clearTimeout(minuteur);
       }
       let json = {};
       try {
