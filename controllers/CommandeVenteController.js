@@ -4,6 +4,7 @@ import CommandeVente from '../models/CommandeVente.js';
 
 import Produit from '../models/Produit.js';
 
+import { notifierVente } from '../Services/notificationsPush.js';
 // Annuler une vente déjà encaissée fait sortir de l'argent : action réglée par le propriétaire
 
 class CommandeVenteController {
@@ -130,6 +131,12 @@ class CommandeVenteController {
                     nom: req.user?.fullname || null,
                     id_employe: req.user?.type === 'employe' ? req.user.id_employe : null,
                 },
+            });
+
+            // Téléphone(s) du patron : « Nouvelle vente » (sauf celui qui vient de la faire)
+            notifierVente(req.workspaceId, commande, {
+                vendeur: req.user?.fullname || null,
+                jetonExclu: req.get('x-miyo-appareil') || null,
             });
 
             return res.status(201).json({
@@ -437,7 +444,7 @@ class CommandeVenteController {
 
             return res.status(201).json({
                 success: true,
-                message: '✅ Paiement enregistré avec succès',
+                message: 'Paiement enregistré avec succès',
                 data: paiement
             });
 

@@ -412,6 +412,9 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
         // texte lu à voix haute : pas de mise en forme
         .replace(/\*\*|__|`|#+\s/g, '')
         .replace(/^\s*[-•]\s+/gm, '')
+        // jamais d'emoji dans Miyo (affiché et lu à voix haute)
+        .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu, '')
+        .replace(/[ \t]{2,}/g, ' ')
         .trim();
 
       return {

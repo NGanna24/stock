@@ -7,6 +7,8 @@
 //      Un produit n'est signalé qu'une fois ; il le sera de nouveau après être remonté au-dessus du minimum.
 //   2. Résumé du jour : chaque soir à partir de 20 h (heure d'Abidjan).
 //   3. Abonnement : 3 jours avant la fin, la veille, le jour même et le lendemain de l'expiration.
+//   4. Nouvelle vente : dès qu'une vente est enregistrée (ordinateur, téléphone d'un employé…).
+//      Le téléphone qui a fait la vente n'est pas prévenu (il a déjà sa confirmation).
 //
 // Chaque envoi est noté dans push_envois (clé unique) : rien n'est envoyé deux fois,
 // même si le serveur redémarre ou tourne en plusieurs exemplaires.
@@ -103,8 +105,8 @@ async function jetonsPatron(id_utilisateur) {
 }
 
 /** Envoie au patron ; renvoie le nombre de téléphones atteints. */
-export async function envoyerAuPatron(id_utilisateur, message) {
-    const jetons = await jetonsPatron(id_utilisateur);
+export async function envoyerAuPatron(id_utilisateur, message, jetonExclu = null) {
+    const jetons = (await jetonsPatron(id_utilisateur)).filter((j) => j !== jetonExclu);
     if (!jetons.length) return 0;
     const { envoyes } = await envoyer(jetons, message);
     return envoyes;
@@ -254,6 +256,26 @@ export async function verifierAbonnement(id_utilisateur) {
 }
 
 /* ============================================================
+   4. NOUVELLE VENTE
+   ============================================================ */
+/** Appelé après la création d'une vente ; ne bloque jamais la vente. */
+export function notifierVente(id_utilisateur, vente, { vendeur = null, jetonExclu = null } = {}) {
+    if (!vente) return;
+    const montant = num(vente.montant_total ?? vente.montant_facture);
+    const client = vente.nomclient ? ` · ${vente.nomclient}` : '';
+    const par = vendeur ? ` · par ${vendeur}` : '';
+    envoyerAuPatron(
+        id_utilisateur,
+        {
+            titre: 'Nouvelle vente',
+            texte: `${vente.numero_commande || 'Vente'} : ${fcfa(montant)}${client}${par}.`,
+            donnees: { ecran: vente.id_commande ? `/(tabs)/ventes?vente=${vente.id_commande}` : '/(tabs)/ventes', type: 'vente' },
+        },
+        jetonExclu
+    ).catch((e) => console.warn('⚠️ [Push] vente :', e.message));
+}
+
+/* ============================================================
    PLANIFICATION
    ============================================================ */
 let enCours = false;
@@ -296,4 +318,4 @@ export function demarrerNotificationsPush() {
     console.log(' [Push] Notifications push actives (vérification toutes les 10 min)');
 }
 
-export default { envoyer, envoyerAuPatron, verifierStock, envoyerResume, verifierAbonnement, demarrerNotificationsPush };
+export default { envoyer, envoyerAuPatron, verifierStock, envoyerResume, verifierAbonnement, notifierVente, demarrerNotificationsPush };

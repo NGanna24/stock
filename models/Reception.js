@@ -374,7 +374,7 @@ class Reception {
 
                 if (ecart < 0) {
                     console.log(
-                        `⚠️ Surplus détecté pour "${produitNom}" : ` +
+                        `Surplus détecté pour "${produitNom}" : ` +
                         `reste avant = ${resteAvantBase} base, reçu = ${qteTotaleBase} base`
                     );
                 }

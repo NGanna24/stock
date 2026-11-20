@@ -62,7 +62,7 @@ class PaiementController {
 
             return res.status(201).json({
                 success: true,
-                message: '✅ Paiement enregistré avec succès',
+                message: 'Paiement enregistré avec succès',
                 data: paiement
             });
 
