@@ -58,7 +58,7 @@ const SOUS_ENTREPOT = {
 };
 
 // Routes jamais journalisées (pas de modification de données)
-const IGNORES = [/^\/utilisateur\/(renouveler|verifier-code|logout)\b/, /^\/ping\b/, /^\/gpt\b/, /^\/search\b/, /^\/super-admin\b/, /^\/admin\b/, /\/export\b/];
+const IGNORES = [/^\/utilisateur\/(renouveler|verifier-code|logout)\b/, /^\/ping\b/, /^\/notifications\b/, /^\/gpt\b/, /^\/search\b/, /^\/super-admin\b/, /^\/admin\b/, /\/export\b/];
 
 // Actions particulières reconnues dans le chemin (dernier segment non numérique)
 const ACTIONS_SPECIALES = {

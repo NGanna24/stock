@@ -71,6 +71,8 @@ import { maintenance } from './middleware/maintenance.js';
 import { plateformePublique, plateformeAdmin } from './routes/PlateformeRoutes.js';
 import PermissionRoutes from './routes/PermissionRoutes.js';
 import { controleAcces } from './utils/permissions.js';
+import NotificationRoutes from './routes/NotificationRoutes.js';
+import { demarrerNotificationsPush } from './Services/notificationsPush.js';
 
 // ==================== CONFIGURATION ENVIRONNEMENT ====================
 dotenv.config();
@@ -138,6 +140,8 @@ app.get('/api/ping', (req, res) => res.set('Cache-Control', 'no-store').json({ o
 
 app.use('/api/utilisateur', UtilisateurRoutes);
 app.use('/api/abonnement', AbonnementRoutes);
+// Notifications push de l'application téléphone (enregistrement des téléphones)
+app.use('/api/notifications', NotificationRoutes);
 app.use('/api/modes-paiement', ModePaiementRoutes);
 app.use('/api/emplacements-magasin', EmplacementRoutes);
 app.use('/api/comptes-fournisseurs', CompteFournisseurRoutes);
@@ -207,6 +211,8 @@ const startServer = async () => {
         const server = app.listen(PORT, '0.0.0.0', () => {
             console.log(` [Server] Serveur démarré sur le port ${PORT}`);
             console.log(` [Server] http://localhost:${PORT}`);
+            // Stock bas, résumé du soir, fin d'abonnement → téléphone du patron
+            demarrerNotificationsPush();
         });
  
         // Gestion des erreurs de démarrage du serveur

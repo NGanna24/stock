@@ -402,6 +402,36 @@ CREATE TABLE IF NOT EXISTS permissions_roles (
         REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
 )`;
 
+// Notifications push : téléphones où l'application Miyo est connectée
+// (nouvelle table, aucune table existante n'est touchée)
+const TABLE_APPAREILS_PUSH = `
+CREATE TABLE IF NOT EXISTS appareils_push (
+    id_appareil INT AUTO_INCREMENT PRIMARY KEY,
+    id_utilisateur INT NOT NULL,
+    type_compte ENUM('utilisateur', 'employe') NOT NULL DEFAULT 'utilisateur',
+    id_employe INT NULL,
+    jeton VARCHAR(191) NOT NULL,   -- 191 : clé unique compatible avec toutes les bases (utf8mb4)
+    plateforme VARCHAR(20) NULL,
+    actif TINYINT(1) NOT NULL DEFAULT 1,
+    date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    date_maj DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_appareil_jeton (jeton),
+    INDEX idx_appareil_util (id_utilisateur, actif),
+    CONSTRAINT fk_appareil_utilisateur FOREIGN KEY (id_utilisateur)
+        REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+)`;
+
+// Notifications déjà envoyées (évite les doublons : stock signalé, résumé du jour, rappel d'abonnement)
+const TABLE_PUSH_ENVOIS = `
+CREATE TABLE IF NOT EXISTS push_envois (
+    id_utilisateur INT NOT NULL,
+    cle VARCHAR(100) NOT NULL,
+    date_envoi DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id_utilisateur, cle),
+    CONSTRAINT fk_push_envoi_utilisateur FOREIGN KEY (id_utilisateur)
+        REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
+)`;
+
 export async function executerMigrations(pool) {
     const conn = await pool.getConnection();
     try {
@@ -417,6 +447,8 @@ export async function executerMigrations(pool) {
         await conn.query(TABLE_REGLAGES_DOCUMENTS);
         await conn.query(TABLE_JOURNAL_SUPER_ADMIN);
         await conn.query(TABLE_PERMISSIONS_ROLES);
+        await conn.query(TABLE_APPAREILS_PUSH);
+        await conn.query(TABLE_PUSH_ENVOIS);
         if (!(await colonneExiste(conn, 'produits', 'id_emplacement_magasin'))) {
             await conn.query('ALTER TABLE produits ADD COLUMN id_emplacement_magasin INT NULL');
             await conn.query('ALTER TABLE produits ADD INDEX idx_produit_emplacement (id_emplacement_magasin)');

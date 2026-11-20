@@ -268,10 +268,25 @@ export async function preparer_commande_achat({ fournisseur = null, lignes = [] 
     }
     const produit = classes[0].p;
     const { unite, supposee, inconnue } = uniteAchat(produit, l?.unite);
-    if (inconnue) problemes.push(`Unité « ${inconnue} » inconnue pour ${produit.nom} : j'ai compté en ${unite.nom}.`);
+    let quantite = Math.round(num(l?.quantite));
+    if (inconnue) {
+      // Unité qui n'existe pas pour ce produit (ex : « carton » non créé) :
+      // jamais de conversion en douce (20 cartons ≠ 20 pièces)
+      const contenance = Math.round(num(l?.pieces_par_unite));
+      if (contenance > 0 && quantite > 0) {
+        problemes.push(`${quantite} ${inconnue}${quantite > 1 ? 's' : ''} de ${contenance} = ${quantite * contenance} ${unite.nom} de ${produit.nom}.`);
+        quantite *= contenance;
+      } else {
+        const connues = [unite.nom, ...produit.unites.map((x) => x.nom)].join(', ');
+        problemes.push(
+          `Pour ${produit.nom}, l'unité « ${inconnue} » n'existe pas (unités connues : ${connues}). ` +
+            `Demande combien de ${unite.nom} il y a dans un ${inconnue}, puis rappelle l'outil avec pieces_par_unite. Ne compte pas en ${unite.nom} à la place.`
+        );
+        continue;
+      }
+    }
 
     // Quantité non dite : on propose de remonter au stock maximum (ou au double du minimum)
-    let quantite = Math.round(num(l?.quantite));
     let proposee = false;
     if (quantite <= 0) {
       const stock = num(produit.quantite_stock);

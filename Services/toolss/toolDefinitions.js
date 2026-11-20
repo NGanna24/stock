@@ -751,6 +751,10 @@ export const toolDefinitions = [
                 produit: { type: 'string', description: 'Nom du produit tel que dit' },
                 quantite: { type: 'number', description: 'Quantité dans cette unité (vide si non dite)' },
                 unite: { type: 'string', description: "Unité dite (ex: 'carton', 'pièce'). Vide si non précisée." },
+                pieces_par_unite: {
+                  type: 'number',
+                  description: "Seulement si l'unité dite n'existe pas pour ce produit et que l'utilisateur a dit combien de pièces elle contient (ex: '20 cartons de 12' → 12).",
+                },
                 prix_unitaire: { type: 'number', description: "Prix d'achat par unité SEULEMENT si l'utilisateur le donne" },
               },
               required: ['produit'],
