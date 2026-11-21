@@ -75,6 +75,7 @@ export const ACTIONS = [
     { id: 'produits.modifier', libelle: 'Créer et modifier les produits', aide: 'Prix, stock, fiche produit, suppression.' },
     { id: 'approvisionnement.gerer', libelle: 'Passer et valider les achats', aide: 'Commandes fournisseurs, réceptions, retours fournisseurs.' },
     { id: 'inventaires.gerer', libelle: 'Faire et valider les inventaires', aide: 'Le stock est corrigé à la validation.' },
+    { id: 'retours.valider', libelle: 'Valider les retours clients', aide: "Sans ce droit, le retour attend la validation du propriétaire : le stock et l'argent ne bougent qu'après." },
 ];
 
 export const MODULES_IDS = MODULES.map((m) => m.id);

@@ -1,7 +1,8 @@
 // routes/RetourClientRoutes.js
 import express from 'express';
 import RetourClientController from '../controllers/RetourClientController.js';
-import { authenticateToken } from '../middleware/middleware.js'; // ← adapte selon ton middleware
+import { authenticateToken } from '../middleware/middleware.js';
+import { exigeAction } from '../utils/permissions.js';
 
 const router = express.Router();
 
@@ -34,4 +35,8 @@ router.get('/:id', RetourClientController.getById);
 // Annuler un retour
 router.patch('/:id/annuler', RetourClientController.annuler);
 
-export default router;
+// Valider ou refuser un retour en attente (patron, ou rôle qu'il autorise)
+router.patch('/:id/approuver', exigeAction('retours.valider'), RetourClientController.approuver);
+router.patch('/:id/refuser', exigeAction('retours.valider'), RetourClientController.refuser);
+
+export default router;

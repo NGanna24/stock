@@ -276,6 +276,57 @@ export function notifierVente(id_utilisateur, vente, { vendeur = null, jetonExcl
 }
 
 /* ============================================================
+   RETOURS CLIENTS À VALIDER
+   ============================================================ */
+/** Jetons des employés donnés (leur téléphone connecté à Miyo). */
+async function jetonsEmployes(id_utilisateur, ids) {
+    const liste = [...new Set((ids || []).map(Number).filter(Boolean))];
+    if (!liste.length) return [];
+    const [rows] = await pool.query(
+        `SELECT jeton FROM appareils_push
+          WHERE id_utilisateur = ? AND type_compte = 'employe' AND actif = 1 AND id_employe IN (?)`,
+        [id_utilisateur, liste]
+    );
+    return rows.map((r) => r.jeton);
+}
+
+/**
+ * Un retour attend une validation : téléphones du patron, et des employés
+ * à qui il a donné le droit « Valider les retours clients ».
+ */
+export function notifierRetourAValider(id_utilisateur, retour, { auteur = null, idsValideurs = [], jetonExclu = null } = {}) {
+    if (!retour) return;
+    (async () => {
+        const jetons = [...(await jetonsPatron(id_utilisateur)), ...(await jetonsEmployes(id_utilisateur, idsValideurs))]
+            .filter((j, i, t) => j !== jetonExclu && t.indexOf(j) === i);
+        if (!jetons.length) return;
+        const client = retour.nomclient ? ` · ${retour.nomclient}` : '';
+        await envoyer(jetons, {
+            titre: 'Retour à valider',
+            texte: `${retour.numero_retour} : ${fcfa(retour.montant_total)}${client}${auteur ? ` · demandé par ${auteur}` : ''}.`,
+            donnees: { ecran: `/retours-clients?retour=${retour.id_retour_client}`, type: 'retour_a_valider' },
+        });
+    })().catch((e) => console.warn('[Push] retour à valider :', e.message));
+}
+
+/** Décision du patron : prévient l'employé qui a fait la demande. */
+export function notifierDecisionRetour(id_utilisateur, retour, { approuve, par = null } = {}) {
+    if (!retour?.id_employe_auteur) return;
+    (async () => {
+        const jetons = await jetonsEmployes(id_utilisateur, [retour.id_employe_auteur]);
+        if (!jetons.length) return;
+        const rendu = num(retour.montant_rendu ?? retour.especes);
+        await envoyer(jetons, {
+            titre: approuve ? 'Retour validé' : 'Retour refusé',
+            texte: approuve
+                ? `${retour.numero_retour}${par ? ` validé par ${par}` : ' validé'}.${rendu > 0.009 ? ` Rendez ${fcfa(rendu)} au client.` : ''}`
+                : `${retour.numero_retour}${par ? ` refusé par ${par}` : ' refusé'}.${retour.motif_refus ? ` ${retour.motif_refus}` : ''}`,
+            donnees: { ecran: `/retours-clients?retour=${retour.id_retour_client}`, type: 'retour_decision' },
+        });
+    })().catch((e) => console.warn('[Push] décision retour :', e.message));
+}
+
+/* ============================================================
    PLANIFICATION
    ============================================================ */
 let enCours = false;
@@ -318,4 +369,4 @@ export function demarrerNotificationsPush() {
     console.log(' [Push] Notifications push actives (vérification toutes les 10 min)');
 }
 
-export default { envoyer, envoyerAuPatron, verifierStock, envoyerResume, verifierAbonnement, notifierVente, demarrerNotificationsPush };
+export default { envoyer, envoyerAuPatron, verifierStock, envoyerResume, verifierAbonnement, notifierVente, notifierRetourAValider, notifierDecisionRetour, demarrerNotificationsPush };

@@ -38,6 +38,14 @@ async function cleExiste(conn, table, contrainte) {
 }
 
 const COLONNES = [
+    // ---------- Retours clients validés par le patron ----------
+    // effets_appliques : 1 = stock / facture / espèces déjà passés (tous les anciens retours)
+    ['retours_clients', 'effets_appliques', 'TINYINT(1) NOT NULL DEFAULT 1'],
+    ['retours_clients', 'cree_par_nom', 'VARCHAR(120) NULL'],
+    ['retours_clients', 'id_employe_auteur', 'INT NULL'],
+    ['retours_clients', 'valide_par_nom', 'VARCHAR(120) NULL'],
+    ['retours_clients', 'date_validation', 'DATETIME NULL'],
+    ['retours_clients', 'motif_refus', 'VARCHAR(255) NULL'],
     // ---------- Fiche client ----------
     ['clients', 'type_client', "ENUM('particulier', 'revendeur', 'entreprise') NOT NULL DEFAULT 'particulier'"],
     ['clients', 'quartier', 'VARCHAR(100) NULL'],
