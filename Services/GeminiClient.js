@@ -21,14 +21,14 @@ const DELAI_MS = Number(process.env.GEMINI_DELAI_MS) || 20000;
 // Une question = 3 à 4 appels ; avec un seul modèle, la limite tombe vite.
 // On passe donc au modèle suivant quand l'un est épuisé, et on le
 // reprend quand Google le permet de nouveau.
-// Liste réglable dans .env : GEMINI_MODELES=gemini-3.5-flash,gemini-3.6-flash,...
+// Liste réglable dans .env : GEMINI_MODELES=gemini-3.5-flash-lite,gemini-3.1-flash-lite,...
+// Avec la facturation activée, mettre les « lite » en premier : bien moins chers.
+// (Liste revue le 23/11/2026 : 3.5 Flash et 3.7 Flash ne sont plus proposés,
+// et 2.5 Flash est redirigé vers 3.5 Flash-Lite à partir du 1er décembre 2026.)
 // ============================================================
 const MODELES_DISCUSSION = [
-  'gemini-3.5-flash',
-  'gemini-3.6-flash',
   'gemini-3.8-flash',
-  'gemini-3.7-flash',
-  'gemini-2.5-flash',
+  'gemini-3.6-flash',
   'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
   'gemini-2.5-flash-lite',
@@ -41,8 +41,7 @@ const MODELES_ECOUTE = [
   'gemini-3.1-flash-lite',
   'gemini-2.5-flash-lite',
   'gemini-flash-lite-latest',
-  'gemini-2.5-flash',
-  'gemini-3.5-flash',
+  'gemini-3.6-flash',
 ];
 
 // Signature acceptée par Gemini 3 quand l'historique vient d'un autre modèle
@@ -85,6 +84,10 @@ class GeminiClient {
     if (!this.cle) console.warn('[Gemini] GEMINI_API_KEY manquant dans .env');
   }
 
+  static erreurCredit() {
+    return new ErreurGemini("L'assistant fait une courte pause. Réessaie dans quelques minutes.", 402);
+  }
+
   disponible() {
     return Boolean(this.cle);
   }
@@ -95,6 +98,9 @@ class GeminiClient {
   // ------------------------------------------------------------
   async generer(corps, { ordre } = {}) {
     if (!this.cle) throw new ErreurGemini("Clé Gemini absente : ajoute GEMINI_API_KEY dans le fichier .env du serveur.", 401);
+
+    // Crédit prépayé épuisé : inutile d'appeler Google pendant 10 minutes
+    if (this.creditEpuise > Date.now()) throw GeminiClient.erreurCredit();
 
     const tous = ordre || this.modeles;
     const maintenant = Date.now();
@@ -145,6 +151,13 @@ class GeminiClient {
 
       if (rep.status === 400 && /api key/i.test(msg)) {
         throw new ErreurGemini('La clé Gemini est invalide. Vérifie GEMINI_API_KEY dans le .env du serveur.', 400);
+      }
+
+      // 402 : le crédit acheté d'avance est à 0 $, toutes les clés sont coupées
+      if (rep.status === 402) {
+        this.creditEpuise = Date.now() + 10 * 60 * 1000;
+        console.error('[Gemini] CRÉDIT GOOGLE ÉPUISÉ : recharge sur aistudio.google.com, page Billing. Groq prend le relais en attendant.');
+        throw GeminiClient.erreurCredit();
       }
 
       let pause;
@@ -275,6 +288,18 @@ class GeminiClient {
     return { systeme, contenus };
   }
 
+  // Consommation renvoyée par Google : jetons envoyés (dont pris dans le cache) et reçus (réflexion comprise)
+  static usage(json, modele) {
+    const u = json?.usageMetadata || {};
+    return {
+      fournisseur: 'gemini',
+      modele,
+      entree: u.promptTokenCount || 0,
+      cache: u.cachedContentTokenCount || 0,
+      sortie: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0),
+    };
+  }
+
   static outils(tools = []) {
     const declarations = tools
       .filter((t) => t?.type === 'function' && t.function?.name)
@@ -310,7 +335,10 @@ class GeminiClient {
     const parts = candidat?.content?.parts || [];
     if (!candidat) {
       const raison = json?.promptFeedback?.blockReason;
-      return { choices: [{ message: { role: 'assistant', content: raison ? "Je ne peux pas répondre à ça." : '' } }] };
+      return {
+        choices: [{ message: { role: 'assistant', content: raison ? "Je ne peux pas répondre à ça." : '' } }],
+        _usage: GeminiClient.usage(json, utilise),
+      };
     }
 
     const texte = parts
@@ -341,6 +369,7 @@ class GeminiClient {
           finish_reason: candidat.finishReason,
         },
       ],
+      _usage: GeminiClient.usage(json, utilise),
     };
   }
 

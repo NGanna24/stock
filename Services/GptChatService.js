@@ -10,6 +10,10 @@
 //  - plus de place pour réfléchir (le modèle raisonne avant de répondre)
 //  - un « mémo » des données trouvées est renvoyé à l'application, qui le
 //    rejoue dans l'historique : « et le prix ? » garde le bon produit
+//  - économies : seuls les outils du sujet de la question sont envoyés
+//    (OutilsParSujet), et les consignes fixes passent avant tout ce qui change
+//    (prénom, date…) pour profiter du cache de Google ; chaque question est
+//    comptée (ConsommationIA)
 // ============================================================
 import Groq from 'groq-sdk';
 import Gemini from './GeminiClient.js';
@@ -17,6 +21,8 @@ import dotenv from 'dotenv';
 import { pool } from '../config/db.js';
 import { toolDefinitions } from './toolss/toolDefinitions.js';
 import { toolExecutors } from './toolss/StockTools.js';
+import { choisirOutils, OUTIL_AUTRES } from './OutilsParSujet.js';
+import { lireUsage, enregistrerQuestion } from './ConsommationIA.js';
 
 dotenv.config();
 
@@ -145,14 +151,11 @@ class GptChatService {
   // ============================================================
   // CONSIGNES
   // ============================================================
-  getSystemPrompt(user = {}, boutique = null) {
-    const p = periodes();
-    const prenom = user.fullname ? String(user.fullname).split(' ')[0] : '';
-    const role = roleDe(user);
-    const moment = p.heure < 12 ? 'le matin' : p.heure < 18 ? "l'après-midi" : 'le soir';
-
-    return `Tu es Miyo, l'assistant de la boutique${boutique?.nom ? ` « ${boutique.nom} »` : ''}${boutique?.ville ? ` à ${boutique.ville}` : ''}, en Côte d'Ivoire. La boutique vend surtout des pièces détachées et des lubrifiants pour motos, au détail et en gros (cartons).
-Tu parles à ${prenom || "l'utilisateur"}, ${LIBELLE_ROLE[role] || role}. Nous sommes ${p.jour}, ${moment}.
+  // Consignes FIXES : identiques pour toutes les boutiques et tous les jours.
+  // Google ne facture presque rien pour un début de message qu'il a déjà vu
+  // (cache) : tout ce qui change (prénom, date, boutique) va dans contexte().
+  getSystemPrompt() {
+    return `Tu es Miyo, l'assistant d'une boutique en Côte d'Ivoire. Les boutiques qui t'utilisent vendent surtout des pièces détachées et des lubrifiants pour motos, au détail et en gros (cartons). Le nom de la boutique, la personne qui te parle, son rôle et la date sont donnés dans le message « Contexte » au début de la conversation.
 
 ## Ce que tu reçois
 Le message vient d'une DICTÉE VOCALE. Il peut contenir des fautes d'écoute ou des mots mal coupés (« bouchie » pour « bougie », « cinq litres » pour « 5L », « Ali » écrit « Allie »).
@@ -192,15 +195,12 @@ Tu ne sais RIEN du magasin sans appeler un outil. Ne devine jamais un chiffre.
 - Question trop vague (« combien ? ») : demande une précision avec deux exemples concrets.
 - Suite de conversation (« et le prix ? », « et hier ? », « lesquels ? ») : reprends le produit, le client ou la période de l'échange précédent. Les lignes « [mémo] » de l'historique contiennent les données déjà trouvées.
 
-## Dates (déjà calculées, utilise-les telles quelles au format AAAA-MM-JJ)
-- aujourd'hui : ${p.aujourdhui}
-- hier : ${p.hier}
-- cette semaine : ${p.debut_semaine} au ${p.aujourdhui}
-- la semaine dernière : ${p.debut_semaine_derniere} au ${p.fin_semaine_derniere}
-- ce mois : ${p.debut_mois} au ${p.aujourdhui}
-- le mois dernier : ${p.debut_mois_dernier} au ${p.fin_mois_dernier}
-- cette année : ${p.aujourdhui.slice(0, 4)}-01-01 au ${p.aujourdhui}
+## Dates
+Les dates déjà calculées (aujourd'hui, hier, cette semaine, ce mois…) sont dans le message « Contexte » : utilise-les telles quelles, au format AAAA-MM-JJ.
 Sans période précisée pour des ventes : prends ce mois.
+
+## Outils reçus
+Pour aller plus vite, tu ne reçois que les outils utiles au sujet de la question. Si aucun d'eux ne permet de répondre et que l'outil autres_informations est proposé, appelle-le d'abord : tu recevras tous les outils. Ne dis jamais qu'une information n'est pas disponible avant de l'avoir fait.
 
 ## Vendre à la voix
 Quand on te demande de vendre (« vends 2 cartons d'huile à Awa », « mets 3 bougies pour Koffi, il a payé ») :
@@ -216,20 +216,42 @@ Quand on te demande de commander ou d'acheter des produits pour la boutique (« 
 - Si le fournisseur manque ou si un produit est flou, demande la précision.
 
 ## Droits
-Tu n'as accès qu'aux informations permises pour un ${LIBELLE_ROLE[role] || role}. Si on te demande autre chose (bénéfices, prix d'achat, employés…) et que tu n'as pas l'outil, réponds gentiment que ce n'est pas disponible avec ce compte.
+Tu n'as accès qu'aux informations permises pour le rôle de la personne (donné dans le « Contexte »). Si on te demande autre chose (bénéfices, prix d'achat, employés…) et que tu n'as pas l'outil, réponds gentiment que ce n'est pas disponible avec ce compte.
 
 ## Politesse
 Bonjour, merci, au revoir : réponds en une phrase, sans outil. Hors sujet : ramène gentiment à la boutique.`;
+  }
+
+  // Ce qui change d'une question à l'autre : placé APRÈS les consignes et les outils
+  contexte(user = {}, boutique = null, vocabulaire = '') {
+    const p = periodes();
+    const prenom = user.fullname ? String(user.fullname).split(' ')[0] : '';
+    const role = roleDe(user);
+    const moment = p.heure < 12 ? 'le matin' : p.heure < 18 ? "l'après-midi" : 'le soir';
+    return `[Contexte : informations du système, ce n'est pas un message de la personne]
+Boutique : ${boutique?.nom ? `« ${boutique.nom} »` : 'nom non renseigné'}${boutique?.ville ? ` à ${boutique.ville}` : ''}.
+Tu parles à ${prenom || "l'utilisateur"}, ${LIBELLE_ROLE[role] || role}. Nous sommes ${p.jour}, ${moment}.
+Dates (AAAA-MM-JJ) :
+- aujourd'hui : ${p.aujourdhui}
+- hier : ${p.hier}
+- cette semaine : ${p.debut_semaine} au ${p.aujourdhui}
+- la semaine dernière : ${p.debut_semaine_derniere} au ${p.fin_semaine_derniere}
+- ce mois : ${p.debut_mois} au ${p.aujourdhui}
+- le mois dernier : ${p.debut_mois_dernier} au ${p.fin_mois_dernier}
+- cette année : ${p.aujourdhui.slice(0, 4)}-01-01 au ${p.aujourdhui}${
+      vocabulaire ? `\nNoms utilisés dans cette boutique (produits, marques, clients) : ${vocabulaire.slice(0, 1500)}` : ''
+    }`;
   }
 
   // ============================================================
   // CHAT
   // ============================================================
   // Consignes en plus quand on envoie directement la voix (une seule étape : écouter, chercher, répondre)
-  consignesVoix(vocabulaire = '') {
+  consignesVoix() {
     return `## Message vocal
 Le dernier message de l'utilisateur est un ENREGISTREMENT DE SA VOIX (accent ivoirien, bruit de boutique possible).
-${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients) : ${vocabulaire.slice(0, 1500)}\n` : ''}- Écoute, comprends la demande, appelle les outils si besoin, puis réponds.
+Les noms utilisés dans la boutique (produits, marques, clients) sont dans le « Contexte ».
+- Écoute, comprends la demande, appelle les outils si besoin, puis réponds.
 - Ta réponse finale commence OBLIGATOIREMENT par une ligne « ENTENDU: » suivie de ce que la personne a demandé, en français correct et court. Puis, à la ligne suivante, ta réponse.
 - Si on n'entend aucune parole : « ENTENDU: [silence] » puis « Je n'ai rien entendu. Parle plus près du téléphone. »`;
   }
@@ -252,10 +274,10 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
     // Les commandes fournisseur ne sont proposées qu'aux versions de l'application qui savent les afficher
     // (une ancienne version prendrait le brouillon pour une vente)
     const actionsAcceptees = String(actions || '').split(',').map((x) => x.trim());
-    const outils = outilsAutorises(role).filter(
+    const outilsRole = outilsAutorises(role).filter(
       (t) => t.function.name !== 'preparer_commande_achat' || actionsAcceptees.includes('commande_achat')
     );
-    const nomsPermis = new Set(outils.map((t) => t.function.name));
+    const nomsPermis = new Set(outilsRole.map((t) => t.function.name));
     const masquerSensible = role === 'caissier';
     const boutique = await this.nomBoutique(workspaceId);
 
@@ -266,11 +288,19 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
           .map((h) => ({ role: h.role, content: h.content.slice(0, 1500) }))
       : [];
 
+    // Seulement les outils du sujet de la question (tous pour un message vocal ou une question floue)
+    const choix = choisirOutils(audio ? '' : userMessage, safeHistory, outilsRole, { voix: Boolean(audio) });
+    let outils = choix.outils;
+    let complet = choix.complet;
+
+    // Ordre pensé pour le cache de Google : consignes fixes (+ outils) d'abord, puis ce qui change
     const messages = [
-      { role: 'system', content: this.getSystemPrompt(user, boutique) + (audio ? `\n\n${this.consignesVoix(vocabulaire)}` : '') },
+      { role: 'system', content: this.getSystemPrompt() + (audio ? `\n\n${this.consignesVoix()}` : '') },
+      { role: 'user', content: this.contexte(user, boutique, audio ? vocabulaire : '') },
       ...safeHistory,
       { role: 'user', content: userMessage.trim(), ...(audio ? { _audio: audio } : {}) },
     ];
+    const consommation = [];
 
     const toolsUsed = [];
     const memo = [];
@@ -306,8 +336,9 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
         return await Gemini.discuter({ messages, tools: outils, max_tokens: this.MAX_TOKENS });
       } catch (e) {
         // Avec la voix, Groq ne peut pas écouter : c'est l'appelant qui passe par la dictée
-        if ([429, 503].includes(e.status) && this.groqSecours && !audio && !sansSecours) {
-          console.warn('[GptChatService] limite Google atteinte : Groq prend le relais');
+        // 402 = crédit Google épuisé : Groq répond en attendant la recharge
+        if ([402, 429, 503].includes(e.status) && this.groqSecours && !audio && !sansSecours) {
+          console.warn(`[GptChatService] ${e.status === 402 ? 'crédit Google épuisé' : 'limite Google atteinte'} : Groq prend le relais`);
           return appelGroq();
         }
         throw e;
@@ -316,14 +347,36 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
     const appeler = async () => {
       const t = Date.now();
       try {
-        return await appelerIA();
+        const rep = await appelerIA();
+        const u = lireUsage(rep);
+        if (u) consommation.push(u);
+        return rep;
       } finally {
         tempsIA.push(Date.now() - t);
       }
     };
+    // Outils reçus insuffisants : l'IA demande tout, on relance avec la liste complète
+    const elargirSiDemande = async (reponse) => {
+      const appels = reponse.choices[0].message.tool_calls || [];
+      if (complet || !appels.some((a) => a.function.name === OUTIL_AUTRES.function.name)) return reponse;
+      console.log(`[Miyo IA] outils du sujet insuffisants (${choix.sujets.join(', ')}) : tous les outils`);
+      outils = outilsRole;
+      complet = true;
+      return appeler();
+    };
+    const compter = () =>
+      enregistrerQuestion({
+        id_utilisateur: workspaceId,
+        appels: consommation,
+        voix: Boolean(audio),
+        outilsEnvoyes: outils.length,
+        complet,
+        sujets: choix.sujets,
+        dureeMs: Date.now() - debut,
+      });
 
     try {
-      let response = await appeler();
+      let response = await elargirSiDemande(await appeler());
       let assistantMessage = response.choices[0].message;
       let iterations = 0;
 
@@ -378,11 +431,12 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
           messages.push({ role: 'tool', tool_call_id: toolCall.id, name: toolName, content: contenu.slice(0, 12000) });
         }
 
-        response = await appeler();
+        response = await elargirSiDemande(await appeler());
         assistantMessage = response.choices[0].message;
       }
 
       journal();
+      compter();
       if (iterations >= this.MAX_ITERATIONS && assistantMessage.tool_calls?.length) {
         return {
           success: true,
@@ -427,6 +481,7 @@ ${vocabulaire ? `Noms utilisés dans cette boutique (produits, marques, clients)
         tools_used: toolsUsed,
       };
     } catch (error) {
+      compter();
       console.error(`[GptChatService] Erreur après ${Date.now() - debut} ms :`, error.message);
       throw new Error(error?.error?.message || error.message || 'Erreur de conversation');
     }
