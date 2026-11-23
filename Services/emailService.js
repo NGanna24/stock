@@ -21,32 +21,33 @@ const transporter = nodemailer.createTransport({
         user: EMAIL_USER,
         pass: EMAIL_APP_PASSWORD
     },
-    // ✅ Logs de debug SMTP (très utiles pour diagnostiquer)
-    logger: true,
-    debug: true
+    // Journal détaillé SMTP seulement sur demande (EMAIL_DEBUG=1 dans le .env) :
+    // il recopie le contenu des emails, donc les codes de réinitialisation.
+    logger: process.env.EMAIL_DEBUG === '1',
+    debug: process.env.EMAIL_DEBUG === '1'
 });
 
 // ============================================================
-// ✅ VÉRIFICATION DE LA CONNEXION SMTP AU DÉMARRAGE
+// VÉRIFICATION DE LA CONNEXION SMTP AU DÉMARRAGE
 // ============================================================
 (async () => {
     // Ne vérifier que si les credentials sont présents
     if (!EMAIL_USER || !EMAIL_APP_PASSWORD) {
-        console.log('⚠️ [EMAIL-VERIFY] Credentials manquants → vérification ignorée');
+        console.log('[EMAIL-VERIFY] Credentials manquants → vérification ignorée');
         return;
     }
 
     if (process.env.NODE_ENV === 'development' && !EMAIL_USER) {
-        console.log('⚠️ [EMAIL-VERIFY] Mode dev sans credentials → vérification ignorée');
+        console.log('[EMAIL-VERIFY] Mode dev sans credentials → vérification ignorée');
         return;
     }
 
     try {
         await transporter.verify();
-        console.log('✅ [EMAIL-VERIFY] Connexion SMTP OK ! Gmail accepte les credentials.');
+        console.log('[EMAIL-VERIFY] Connexion SMTP OK ! Gmail accepte les credentials.');
     } catch (error) {
         console.log('');
-        console.log('❌ [EMAIL-VERIFY] ÉCHEC de la connexion SMTP');
+        console.log('[EMAIL-VERIFY] ÉCHEC de la connexion SMTP');
        
         if (error.response && error.response.includes('535')) {
             console.log('   → Google rejette les identifiants.');
@@ -67,13 +68,13 @@ export async function sendEmail({ to, subject, html, text, replyTo, expediteur }
 
     // Mode dev sans credentials : log uniquement
     if (process.env.NODE_ENV === 'development' && !EMAIL_USER) {
-        console.log('📧 [EMAIL-DEV] Mode développement → email NON envoyé');
+        console.log('[EMAIL-DEV] Mode développement → email NON envoyé');
       
         return { success: true, dev: true };
     }
 
     try {
-        console.log('📧 Envoi en cours...');
+        console.log('Envoi en cours...');
         const info = await transporter.sendMail({
             from: `"${expediteur || 'Miyo Stock'}" <${EMAIL_USER}>`,
             to,
@@ -92,13 +93,13 @@ export async function sendEmail({ to, subject, html, text, replyTo, expediteur }
        
         // Diagnostic automatique
         if (error.response && error.response.includes('535')) {
-            console.log('💡 DIAGNOSTIC : Google refuse les identifiants (BadCredentials)');
+            console.log('DIAGNOSTIC : Google refuse les identifiants (BadCredentials)');
            
         } else if (error.code === 'EAUTH') {
-            console.log('💡 DIAGNOSTIC : Erreur d\'authentification');
+            console.log('DIAGNOSTIC : Erreur d\'authentification');
            
         } else if (error.code === 'ECONNECTION' || error.code === 'ETIMEDOUT') {
-            console.log('💡 DIAGNOSTIC : Problème réseau');
+            console.log('DIAGNOSTIC : Problème réseau');
             
         }
 

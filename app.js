@@ -73,11 +73,40 @@ import PermissionRoutes from './routes/PermissionRoutes.js';
 import { controleAcces } from './utils/permissions.js';
 import NotificationRoutes from './routes/NotificationRoutes.js';
 import { demarrerNotificationsPush } from './Services/notificationsPush.js';
+import { limiterParAppareil } from './utils/securite.js';
 
 // ==================== CONFIGURATION ENVIRONNEMENT ====================
 dotenv.config();
 
+// Sans clé de session, n'importe qui pourrait fabriquer une connexion : on refuse de démarrer
+if (!process.env.JWT_SECRET) {
+    console.error(' [Sécurité] JWT_SECRET manquant dans le fichier .env : le serveur ne démarre pas.');
+    process.exit(1);
+}
+if (process.env.JWT_SECRET.length < 32) {
+    console.warn(' [Sécurité] JWT_SECRET est court : mettez au moins 32 caractères au hasard.');
+}
+if (!process.env.JWT_SUPER_ADMIN_SECRET) {
+    console.warn(' [Sécurité] JWT_SUPER_ADMIN_SECRET manquant : la console Super Admin ne pourra pas se connecter.');
+}
+
 const app = express();
+
+// Ne pas annoncer la technologie du serveur
+app.disable('x-powered-by');
+
+// En-têtes de sécurité pour le navigateur
+app.use((req, res, next) => {
+    res.set({
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'strict-origin-when-cross-origin',
+    });
+    next();
+});
+
+// Limite générale par appareil sur l'API (évite qu'un seul appareil inonde le serveur).
+// Large exprès : plusieurs employés d'une même boutique partagent souvent la même adresse.
+app.use('/api', limiterParAppareil('api', Number(process.env.LIMITE_API_5MIN) || 1500, 5));
 
 // Middleware pour parser le JSON
 app.use(express.json());
@@ -116,7 +145,7 @@ app.use(cors({
         if (allowedOrigins.includes(origin)) {
             callback(null, origin);
         } else {
-            console.log('❌ CORS bloqué pour :', origin);
+            console.log(' [CORS] Origine refusée :', origin);
             callback(new Error('Not allowed by CORS'));
         }
     },
@@ -208,7 +237,9 @@ const startServer = async () => {
         console.log(' [Database] Base de données initialisée avec succès');
 
         const PORT = process.env.PORT || 8080;
-        const server = app.listen(PORT, '0.0.0.0', () => {
+        // Sur le VPS, mettre HOST=127.0.0.1 dans le .env : seul nginx peut alors joindre Miyo
+        const HOST = process.env.HOST || '0.0.0.0';
+        const server = app.listen(PORT, HOST, () => {
             console.log(` [Server] Serveur démarré sur le port ${PORT}`);
             console.log(` [Server] http://localhost:${PORT}`);
             // Stock bas, résumé du soir, fin d'abonnement → téléphone du patron

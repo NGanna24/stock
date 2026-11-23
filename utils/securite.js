@@ -19,11 +19,18 @@ const TABLES = {
 };
 const cible = (type) => TABLES[type === 'employe' ? 'employe' : 'utilisateur'];
 
+/** Clé de signature des sessions : jamais de clé par défaut (elle serait connue de tous). */
+export function secretJwt() {
+    const s = process.env.JWT_SECRET;
+    if (!s) throw new Error('JWT_SECRET manquant dans le fichier .env');
+    return s;
+}
+
 /** Jeton de session (contient la version de session du compte). */
 export function signerJeton({ id, telephone, role, type, sv }) {
     return jwt.sign(
         { id, telephone, role, type, sv: Number(sv) || 1 },
-        process.env.JWT_SECRET || 'your-secret-key',
+        secretJwt(),
         { expiresIn: DUREE_SESSION }
     );
 }
@@ -85,9 +92,17 @@ export async function revoquerSessions(type, id, db = pool) {
 // ------------------------------------------------------------
 const compteurs = new Map();
 
-/** Adresse du client (derrière nginx : première adresse de X-Forwarded-For). */
-export const adresseClient = (req) =>
-    String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || req.ip || '').split(',')[0].trim() || 'inconnue';
+/**
+ * Adresse du client derrière nginx.
+ * On ne prend PAS la première adresse de X-Forwarded-For : le visiteur peut l'inventer
+ * pour échapper aux limites. On prend X-Real-IP, ou la dernière adresse, ajoutée par nginx.
+ */
+export const adresseClient = (req) => {
+    const reelle = String(req.headers['x-real-ip'] || '').trim();
+    if (reelle) return reelle;
+    const chaine = String(req.headers['x-forwarded-for'] || '').split(',').map((a) => a.trim()).filter(Boolean);
+    return chaine[chaine.length - 1] || req.socket?.remoteAddress || req.ip || 'inconnue';
+};
 
 /**
  * Middleware : au plus `max` requêtes par `minutes` pour une même adresse et un même usage.

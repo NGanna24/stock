@@ -2,6 +2,7 @@
 import jwt from 'jsonwebtoken';
 import Utilisateur from '../models/Utilisateur.js';
 import Employe from '../models/Employe.js';
+import { secretJwt } from '../utils/securite.js';
 
 /**
  * ============================================================
@@ -30,7 +31,7 @@ export const authenticateToken = (req, res, next) => {
             });
         }
 
-        jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key', async (err, decoded) => {
+        jwt.verify(token, secretJwt(), async (err, decoded) => {
             if (err) {
                 return res.status(401).json({
                     success: false,
