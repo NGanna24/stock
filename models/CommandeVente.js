@@ -5,6 +5,7 @@ import { prochainNumero, prefixeDuMois, estDoublonNumero, attendreUnPeu } from '
 import MouvementStock from './MouvementStock.js';
 import Client from './Client.js';
 import { analyserTelephone, formaterTelephone, indicatifDuMagasin } from '../utils/telephone.js';
+import { nomUniteLigne } from '../utils/nomUnite.js';
 
 // Refus « normal » (règle de gestion) : le contrôleur renvoie ce statut HTTP et ce message tel quel.
 const erreurMetier = (message, status = 400, code = null) =>
@@ -178,7 +179,7 @@ class CommandeVente {
                 lignesCalculees.push({
                     id_produit,
                     id_unite_vente,
-                    nom_unite_vente,
+                    nom_unite_vente: await nomUniteLigne(connection, nom_unite_vente, qteBase, { id_produit }),
                     quantite_base: qteBase,
                     quantite: parseFloat(quantite),
                     quantite_totale_base: qteTotaleBase,
@@ -433,6 +434,7 @@ await connection.execute(
                             m.nom as marque_nom,
                             p.id_unite,
                             u.symbole as unite_symbole,
+                            u.nom as unite_nom,
                             uv.nom as unite_vente_nom,
                             uv.quantite_base as unite_vente_quantite_base
                      FROM ligne_commande_vente lcv
@@ -446,7 +448,7 @@ await connection.execute(
     
                 commande.lignes = lignes.map(l => ({
                     ...l,
-                    nom_unite_vente: l.nom_unite_vente || l.unite_vente_nom || 'Unité',
+                    nom_unite_vente: l.nom_unite_vente || l.unite_vente_nom || l.unite_nom || 'Unité',
                     quantite_base: parseFloat(l.quantite_base) || 1,
                     quantite_totale_base: parseFloat(l.quantite_totale_base)
                         || (parseFloat(l.quantite) * (parseFloat(l.quantite_base) || 1))

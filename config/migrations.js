@@ -440,6 +440,72 @@ CREATE TABLE IF NOT EXISTS push_envois (
         REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE
 )`;
 
+/* ------------------------------------------------------------------
+   Lignes faites dans l'unité de base : l'ancien code enregistrait le mot
+   « Unité » au lieu du vrai nom (Pièce, Litre…). On remet le bon nom.
+   Sans danger si relancé : ne touche que les lignes encore à « Unité ».
+   ------------------------------------------------------------------ */
+const NOMS_GENERIQUES = "('', 'Unité', 'unité', 'Unite', 'unite', 'Unité(s)', 'unité(s)')";
+const LIGNES_UNITE = [
+    // [table, colonnes d'unité de vente, produit du magasin, produit d'entrepôt]
+    ['ligne_commande_vente', ['id_unite_vente'], 'id_produit', null],
+    ['retour_client_lignes', ['id_unite_vente'], 'id_produit', null],
+    ['entrees_stock', ['id_unite_vente'], 'id_produit', null],
+    ['sorties_stock', ['id_unite_vente'], 'id_produit', null],
+    ['ligne_commande_achat', ['id_unite_vente', 'id_unite_vente_entrepot'], 'id_produit', 'id_produit_entrepot'],
+    ['reception_lignes', ['id_unite_vente', 'id_unite_vente_entrepot'], 'id_produit', 'id_produit_entrepot'],
+    ['mouvements_entrepot', ['id_unite_vente_entrepot'], null, 'id_produit_entrepot'],
+    ['transferts_stock', ['id_unite_vente_entrepot'], null, 'id_produit_entrepot'],
+    ['entrees_stock_entrepot', ['id_unite_vente_entrepot'], null, 'id_produit_entrepot'],
+    ['sorties_stock_entrepot', ['id_unite_vente_entrepot'], null, 'id_produit_entrepot'],
+];
+
+async function corrigerNomsUnite(conn) {
+    let total = 0;
+    for (const [table, colsUV, colProduit, colProduitEnt] of LIGNES_UNITE) {
+        try {
+            if (!(await colonneExiste(conn, table, 'nom_unite_vente'))) continue;
+            const base = [];
+            for (const c of colsUV) if (await colonneExiste(conn, table, c)) base.push(`l.${c} IS NULL`);
+            if (await colonneExiste(conn, table, 'quantite_base')) base.push('(l.quantite_base IS NULL OR l.quantite_base = 1)');
+            base.push(`(l.nom_unite_vente IS NULL OR l.nom_unite_vente IN ${NOMS_GENERIQUES})`);
+            const sources = [];
+            if (colProduit && (await colonneExiste(conn, table, colProduit))) sources.push(['produits', 'id_produit', colProduit]);
+            if (colProduitEnt && (await colonneExiste(conn, table, colProduitEnt))) sources.push(['produits_entrepot', 'id_produit_entrepot', colProduitEnt]);
+            for (const [tp, idp, col] of sources) {
+                const [r] = await conn.query(
+                    `UPDATE \`${table}\` l
+                       JOIN \`${tp}\` p ON p.${idp} = l.${col}
+                       JOIN unites u ON u.id_unite = p.id_unite
+                        SET l.nom_unite_vente = u.nom
+                      WHERE ${base.join(' AND ')}
+                        AND u.nom IS NOT NULL AND u.nom NOT IN ${NOMS_GENERIQUES}`
+                );
+                total += r.affectedRows || 0;
+            }
+        } catch (e) {
+            console.warn(` [Migration] noms d'unité (${table}) : ${e.message}`);
+        }
+    }
+    // Unités de vente nommées « Unité » (quantité 1), créées par les anciens transferts
+    for (const [tuv, tp, idp] of [['unites_vente', 'produits', 'id_produit'], ['unites_vente_entrepot', 'produits_entrepot', 'id_produit_entrepot']]) {
+        try {
+            const [r] = await conn.query(
+                `UPDATE \`${tuv}\` uv
+                   JOIN \`${tp}\` p ON p.${idp} = uv.${idp}
+                   JOIN unites u ON u.id_unite = p.id_unite
+                    SET uv.nom = u.nom
+                  WHERE uv.quantite_base = 1 AND uv.nom IN ${NOMS_GENERIQUES}
+                    AND u.nom IS NOT NULL AND u.nom NOT IN ${NOMS_GENERIQUES}`
+            );
+            total += r.affectedRows || 0;
+        } catch (e) {
+            console.warn(` [Migration] noms d'unité (${tuv}) : ${e.message}`);
+        }
+    }
+    if (total) console.log(` [Migration] ${total} ligne(s) : « Unité » remplacé par le vrai nom de l'unité`);
+}
+
 export async function executerMigrations(pool) {
     const conn = await pool.getConnection();
     try {
@@ -489,6 +555,7 @@ export async function executerMigrations(pool) {
         }
         // Numéros de reçu pour les encaissements déjà enregistrés (la colonne vient d'être ajoutée)
         await numeroterAnciensRecus(conn);
+        await corrigerNomsUnite(conn);
         if (!(await cleExiste(conn, 'commandes_vente', 'fk_cv_client'))) {
             await conn.query(
                 `ALTER TABLE commandes_vente ADD CONSTRAINT fk_cv_client

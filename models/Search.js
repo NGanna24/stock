@@ -41,6 +41,7 @@ class Search {
                     p.quantite_stock,
                     p.statut,
                     u.symbole AS unite_symbole,
+                    u.nom AS unite_nom,
                     m.nom AS modele_nom,
                     mar.nom AS marque_nom,
                     c.nom AS categorie_nom

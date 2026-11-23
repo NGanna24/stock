@@ -7,6 +7,7 @@
 // Les commandes restent rattachées au compte (id_utilisateur = workspace).
 import { pool } from '../config/db.js';
 import { prochainNumero, prefixeDuMois } from '../utils/numerotation.js';
+import { nomUniteLigne } from '../utils/nomUnite.js';
 
 const fail = (message, statusCode = 400) => {
     const err = new Error(message);
@@ -102,7 +103,7 @@ class CommandeAchat {
         }
 
         let qteBase = parseFloat(quantite_base) || 1;
-        let nomUnite = nom_unite_vente || 'Unité';
+        let nomUnite = nom_unite_vente || '';
 
         if (estEntrepot) {
             // ---------- ENTREPÔT ----------
@@ -125,6 +126,8 @@ class CommandeAchat {
                         nomUnite = um[0].nom || nomUnite;
                     }
                 }
+
+                nomUnite = await nomUniteLigne(connection, nomUnite, qteBase, { id_produit, id_produit_entrepot });
 
                 await connection.execute(
                     `INSERT INTO ligne_commande_achat (
@@ -160,6 +163,8 @@ class CommandeAchat {
                 qteBase = parseFloat(uve[0].quantite_base) || 1;
                 nomUnite = uve[0].nom || nomUnite;
             }
+
+            nomUnite = await nomUniteLigne(connection, nomUnite, qteBase, { id_produit, id_produit_entrepot });
 
             await connection.execute(
                 `INSERT INTO ligne_commande_achat (
@@ -201,6 +206,8 @@ class CommandeAchat {
                     qteBase = parseFloat(uniteRows[0].quantite_base) || 1;
                 }
             }
+
+            nomUnite = await nomUniteLigne(connection, nomUnite, qteBase, { id_produit, id_produit_entrepot });
 
             await connection.execute(
                 `INSERT INTO ligne_commande_achat (
@@ -397,7 +404,7 @@ class CommandeAchat {
                     id_unite_vente: estLigneEntrepot
                         ? (l.id_unite_vente_entrepot || null)
                         : (l.id_unite_vente || null),
-                    nom_unite_vente: l.nom_unite_vente || l.unite_vente_nom || 'Unité',
+                    nom_unite_vente: l.nom_unite_vente || l.unite_vente_nom || l.unite_nom || 'Unité',
                     quantite_base: qteBase,
                     quantite_totale_base: qteTotaleBase,
                     prix_achat: l.prix_achat !== null ? parseFloat(l.prix_achat) : null,

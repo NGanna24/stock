@@ -173,7 +173,7 @@ export async function rechercher_produit({ nom }, workspaceId) {
 
   const produitsEnrichis = top.map((p) => {
     const stockBase = safeNumber(p.quantite_stock);
-    const uniteBase = p.unite_symbole || p.unite_nom || 'unité';
+    const uniteBase = p.unite_nom || p.unite_symbole || 'unité';
     const unitesVente = unitesParProduit[p.id_produit] || [];
     const affichage = formaterQuantite(stockBase, uniteBase, unitesVente);
 
@@ -226,7 +226,7 @@ export async function lister_produits({ limite = 30 }, workspaceId) {
     count: rows.length,
     produits: rows.map((r) => {
       const stockBase = safeNumber(r.quantite_stock);
-      const uniteBase = r.unite_symbole || r.unite_nom || 'unité';
+      const uniteBase = r.unite_nom || r.unite_symbole || 'unité';
       const unitesVente = unitesParProduit[r.id_produit] || [];
       const affichage = formaterQuantite(stockBase, uniteBase, unitesVente);
 
@@ -264,7 +264,7 @@ export async function details_produit({ nom }, workspaceId) {
     .filter((x) => (x._score || 0) >= (p._score || 0) - 0.05)
     .map((x) => x.nom);
   const stockBase = safeNumber(p.quantite_stock);
-  const uniteBase = p.unite_symbole || p.unite_nom || 'unité';
+  const uniteBase = p.unite_nom || p.unite_symbole || 'unité';
 
   const unitesParProduit = await chargerUnitesVente([p.id_produit]);
   const unitesVente = unitesParProduit[p.id_produit] || [];
@@ -380,7 +380,7 @@ export async function produits_en_rupture(args, workspaceId) {
     count: rows.length,
     produits: rows.map((r) => ({
       nom: r.nom,
-      unite: r.unite_symbole || r.unite_nom || 'unité',
+      unite: r.unite_nom || r.unite_symbole || 'unité',
       fournisseur: r.fournisseur_nom || null,
       telephone_fournisseur: r.fournisseur_tel || null,
     })),
@@ -409,7 +409,7 @@ export async function produits_stock_bas(args, workspaceId) {
     count: rows.length,
     produits: rows.map((r) => {
       const stockBase = safeNumber(r.quantite_stock);
-      const uniteBase = r.unite_symbole || r.unite_nom || 'unité';
+      const uniteBase = r.unite_nom || r.unite_symbole || 'unité';
       const unitesVente = unitesParProduit[r.id_produit] || [];
       const affichage = formaterQuantite(stockBase, uniteBase, unitesVente);
 
@@ -575,10 +575,12 @@ export async function top_produits({ limite = 5, date_debut, date_fin }, workspa
     `SELECT 
         p.id_produit,
         p.nom,
+        MAX(u.nom) AS unite_nom,
         SUM(lcv.quantite_totale_base) AS total_vendu,
         SUM(lcv.montant_total) AS chiffre_affaires
      FROM ligne_commande_vente lcv
      JOIN produits p ON lcv.id_produit = p.id_produit
+     LEFT JOIN unites u ON u.id_unite = p.id_unite
      JOIN commandes_vente cv ON lcv.id_commande = cv.id_commande
      WHERE cv.id_utilisateur = ?
        AND cv.date_commande BETWEEN ? AND ?
@@ -597,7 +599,7 @@ export async function top_produits({ limite = 5, date_debut, date_fin }, workspa
     produits: rows.map((r) => {
       const totalVenduBase = safeNumber(r.total_vendu);
       const unitesVente = unitesParProduit[r.id_produit] || [];
-      const uniteBase = 'unité';
+      const uniteBase = r.unite_nom || 'unité';
       const affichage = formaterQuantite(totalVenduBase, uniteBase, unitesVente);
 
       return {
@@ -1006,7 +1008,8 @@ export async function derniers_mouvements({ limite = 10 }, workspaceId) {
     `SELECT m.type_mouvement, m.quantite, m.ancienne_quantite, m.nouvelle_quantite,
             m.notes, m.date_mouvement,
             p.nom AS produit_nom,
-            u.symbole AS unite_symbole
+            u.symbole AS unite_symbole,
+            u.nom AS unite_nom
      FROM mouvements_stock m
      LEFT JOIN produits p ON m.id_produit = p.id_produit
      LEFT JOIN unites u ON p.id_unite = u.id_unite
@@ -1022,7 +1025,7 @@ export async function derniers_mouvements({ limite = 10 }, workspaceId) {
       type: r.type_mouvement,
       produit: r.produit_nom || 'Produit supprimé',
       quantite: safeNumber(r.quantite),
-      unite: r.unite_symbole || 'unité',
+      unite: r.unite_nom || r.unite_symbole || 'unité',
       ancien_stock: safeNumber(r.ancienne_quantite),
       nouveau_stock: safeNumber(r.nouvelle_quantite),
       notes: r.notes || null,
@@ -1367,7 +1370,7 @@ export async function rapport_stocks_complet({ limite = 50 }, workspaceId) {
     repartition_etats: stats,
     produits: rows.map((r) => {
       const stockBase = safeNumber(r.quantite_stock);
-      const uniteBase = r.unite_symbole || r.unite_nom || 'unité';
+      const uniteBase = r.unite_nom || r.unite_symbole || 'unité';
       const unitesVente = unitesParProduit[r.id_produit] || [];
       const affichage = formaterQuantite(stockBase, uniteBase, unitesVente);
 
@@ -1424,7 +1427,7 @@ export async function ventes_produit_periode(
   );
 
   const r = rows[0];
-  const uniteBase = produit.unite_symbole || produit.unite_nom || 'unité';
+  const uniteBase = produit.unite_nom || produit.unite_symbole || 'unité';
   const unitesParProduit = await chargerUnitesVente([produit.id_produit]);
   const unitesVente = unitesParProduit[produit.id_produit] || [];
   const affichage = formaterQuantite(
@@ -1476,7 +1479,7 @@ export async function produits_non_vendus({ jours = 90, limite = 20 }, workspace
     count: rows.length,
     produits: rows.map((r) => {
       const stockBase = safeNumber(r.quantite_stock);
-      const uniteBase = r.unite_symbole || r.unite_nom || 'unité';
+      const uniteBase = r.unite_nom || r.unite_symbole || 'unité';
       const unitesVente = unitesParProduit[r.id_produit] || [];
       const affichage = formaterQuantite(stockBase, uniteBase, unitesVente);
 
@@ -1626,4 +1629,4 @@ export const toolExecutors = {
 
   // No-op
   aucune_action,
-};
+};

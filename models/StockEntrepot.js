@@ -1,5 +1,6 @@
 // backend/models/StockEntrepot.js
 import { pool } from '../config/db.js';
+import { nomUniteLigne } from '../utils/nomUnite.js';
 
 class StockEntrepot {
     /* ============================================================
@@ -71,6 +72,7 @@ class StockEntrepot {
         const connection = await pool.getConnection();
         try {
             await connection.beginTransaction();
+            nom_unite_vente = await nomUniteLigne(connection, nom_unite_vente, quantite_base_unite, { id_produit });
 
             // 1) Récupérer l'ancienne quantité (avec verrou)
             const [existing] = await connection.execute(
@@ -193,7 +195,8 @@ class StockEntrepot {
                 p.nom AS produit_nom,
                 u.fullname AS auteur_nom,
                 uv.nom AS unite_vente_nom,
-                un.symbole AS unite_symbole
+                un.symbole AS unite_symbole,
+                un.nom AS unite_nom
             FROM mouvements_entrepot me
             JOIN produits p       ON p.id_produit = me.id_produit
             JOIN utilisateurs u   ON u.id_utilisateur = me.id_utilisateur

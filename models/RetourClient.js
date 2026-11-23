@@ -2,6 +2,7 @@
 import { pool } from '../config/db.js';
 import { prochainNumero, prefixeDuMois } from '../utils/numerotation.js';
 import MouvementStock from './MouvementStock.js';
+import { nomUniteLigne } from '../utils/nomUnite.js';
 
 class RetourClient {
     /**
@@ -237,7 +238,7 @@ class RetourClient {
                     id_produit: ligneOrigine.id_produit,
                     id_ligne_vente: ligneOrigine.id_ligne_vente,
                     id_unite_vente: ligneRetour.id_unite_vente || null,
-                    nom_unite_vente: ligneRetour.nom_unite_vente || 'Unité',
+                    nom_unite_vente: await nomUniteLigne(connection, ligneRetour.nom_unite_vente, ligneRetour.quantite_base, { id_produit: ligneOrigine.id_produit }),
                     quantite_base: parseFloat(ligneRetour.quantite_base) || 1,
                     quantite: parseFloat(ligneRetour.quantite),
                     quantite_totale_base: qteRetourBase,
@@ -909,4 +910,4 @@ class RetourClient {
     }
 }
 
-export default RetourClient;
+export default RetourClient;

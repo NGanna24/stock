@@ -443,7 +443,8 @@ class RetourFournisseur {
                     COALESCE(p.nom, pe.nom) AS produit_nom,
                     COALESCE(p.id_marque, pe.id_marque) AS id_marque,
                     m.nom AS marque_nom,
-                    u.symbole AS unite_symbole
+                    u.symbole AS unite_symbole,
+                    u.nom AS unite_nom
              FROM retour_lignes rl
              LEFT JOIN produits p ON rl.id_produit = p.id_produit
              LEFT JOIN produits_entrepot pe ON rl.id_produit_entrepot = pe.id_produit_entrepot

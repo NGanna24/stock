@@ -8,6 +8,7 @@ import { pool } from '../config/db.js';
 import { prochainNumero, prefixeDuMois } from '../utils/numerotation.js';
 import MouvementStock from './MouvementStock.js';
 import CommandeAchat from './CommandeAchat.js';
+import { nomUniteLigne } from '../utils/nomUnite.js';
 
 const fail = (message, statusCode = 400) => {
     const err = new Error(message);
@@ -236,7 +237,7 @@ class Reception {
 
                 let produitNom;
                 let qteBase = parseFloat(quantite_base) || 1;
-                let nomUnite = nom_unite_vente || 'Unité';
+                let nomUnite = nom_unite_vente || '';
                 let emplacementFinal = null;
 
                 if (isEntrepot) {
@@ -403,6 +404,7 @@ class Reception {
                     prixAchatBase = prixAchatUV / qteBase;
                 }
 
+                nomUnite = await nomUniteLigne(connection, nomUnite, qteBase, isEntrepot ? { id_produit_entrepot } : { id_produit });
                 lignesCalculees.push({
                     id_produit: isEntrepot ? null : id_produit,
                     id_produit_entrepot: isEntrepot ? id_produit_entrepot : null,
@@ -815,6 +817,7 @@ class Reception {
                         m.nom AS marque_nom,
                         COALESCE(p.id_unite, pe.id_unite) AS id_unite,
                         u.symbole AS unite_symbole,
+                        u.nom AS unite_nom,
                         COALESCE(uv.nom, uve.nom) AS unite_vente_nom,
                         COALESCE(uv.quantite_base, uve.quantite_base) AS unite_vente_quantite_base
                  FROM reception_lignes rl
@@ -830,7 +833,7 @@ class Reception {
 
             reception.lignes = lignes.map(l => ({
                 ...l,
-                nom_unite_vente: l.nom_unite_vente || l.unite_vente_nom || 'Unité',
+                nom_unite_vente: l.nom_unite_vente || l.unite_vente_nom || l.unite_nom || 'Unité',
                 quantite_base: parseFloat(l.quantite_base) || 1,
                 quantite_totale_base: parseFloat(l.quantite_totale_base)
                     || (parseFloat(l.quantite_recue) * (parseFloat(l.quantite_base) || 1)),

@@ -267,6 +267,7 @@ static async enregistrer(data, connection, id_utilisateur) {
                     p.nom AS produit_nom,
                     ma.nom AS marque_nom,
                     u.symbole AS unite_symbole,
+                    u.nom AS unite_nom,
                     ut.fullname AS utilisateur_nom
              FROM mouvements_stock m
              LEFT JOIN produits p ON m.id_produit = p.id_produit
@@ -343,6 +344,7 @@ static async enregistrer(data, connection, id_utilisateur) {
                     p.nom AS produit_nom,
                     ma.nom AS marque_nom,
                     u.symbole AS unite_symbole,
+                    u.nom AS unite_nom,
                     ut.fullname AS utilisateur_nom,
                     DATE_FORMAT(m.date_mouvement, '%d/%m/%Y %H:%i') AS date_formatee
              FROM mouvements_stock m

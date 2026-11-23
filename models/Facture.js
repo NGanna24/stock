@@ -184,7 +184,8 @@ class Facture {
                             p.id_modele,
                             md.nom as modele_nom,
                             p.id_unite,
-                            u.symbole as unite_symbole
+                            u.symbole as unite_symbole,
+                            u.nom as unite_nom
                      FROM ligne_commande_vente lcv
                      LEFT JOIN produits p ON lcv.id_produit = p.id_produit
                      LEFT JOIN marques m ON p.id_marque = m.id_marque

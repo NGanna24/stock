@@ -19,6 +19,11 @@
 // `id_utilisateur_destination` = le compte DEMANDEUR (propriétaire du catalogue qui reçoit).
 // `id_utilisateur_validateur`  = le propriétaire qui a approuvé / refusé.
 import { pool } from '../config/db.js';
+import { estNomGenerique } from '../utils/nomUnite.js';
+
+// Nom de l'unité d'un transfert : en unité de base, le vrai nom de l'unité du produit
+const nomLigne = (t, src) =>
+    (estNomGenerique(t.nom_unite_vente) && (parseFloat(t.quantite_base) || 1) === 1 && src?.unite_nom) || t.nom_unite_vente || 'Unité';
 
 const fail = (message, statusCode = 400, code = null) => {
     const err = new Error(message);
@@ -260,7 +265,7 @@ class TransfertStock {
             [
                 t.id_entrepot_source, t.id_produit_entrepot, id_approbateur,
                 quantite, ancienEnt, nouveauEnt,
-                t.id_unite_vente_entrepot || null, t.nom_unite_vente || 'Unité',
+                t.id_unite_vente_entrepot || null, nomLigne(t, src),
                 t.quantite_base || 1, t.quantite_saisie ?? quantite,
                 t.id_transfert, `Transfert ${t.numero_transfert}`,
             ]
@@ -274,7 +279,7 @@ class TransfertStock {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'transfert', ?, ?)`,
             [
                 t.id_entrepot_source, id_approbateur, t.numero_transfert, today(), t.id_produit_entrepot,
-                t.id_unite_vente_entrepot || null, t.nom_unite_vente || 'Unité', t.quantite_base || 1,
+                t.id_unite_vente_entrepot || null, nomLigne(t, src), t.quantite_base || 1,
                 t.quantite_saisie ?? quantite, quantite, t.id_transfert, t.motif || null,
             ]
         );
@@ -360,8 +365,8 @@ class TransfertStock {
                 await conn.execute(
                     `INSERT INTO unites_vente
                         (id_produit, nom, quantite_base, prix_vente, prix_achat, est_principal, actif)
-                     VALUES (?, 'Unité', 1, ?, ?, TRUE, TRUE)`,
-                    [idProduit, parseFloat(src.prix_vente) || 0, parseFloat(src.prix_achat) || 0]
+                     VALUES (?, ?, 1, ?, ?, TRUE, TRUE)`,
+                    [idProduit, src.unite_nom || 'Unité', parseFloat(src.prix_vente) || 0, parseFloat(src.prix_achat) || 0]
                 );
             }
         }
@@ -383,7 +388,7 @@ class TransfertStock {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 dest, t.numero_transfert, idProduit,
-                t.nom_unite_vente || 'Unité', parseFloat(t.quantite_base) || 1,
+                nomLigne(t, src), parseFloat(t.quantite_base) || 1,
                 parseFloat(t.quantite_saisie) || quantite, quantite,
                 `Transfert ${t.numero_transfert} depuis l'entrepôt`,
             ]
@@ -955,4 +960,4 @@ class TransfertStock {
     }
 }
 
-export default TransfertStock;
+export default TransfertStock;

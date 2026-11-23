@@ -27,7 +27,8 @@ class StockMagasin {
                     p.nom as produit_nom,
                     p.prix_achat,
                     p.prix_vente,
-                    u.symbole as unite_symbole
+                    u.symbole as unite_symbole,
+                    u.nom as unite_nom
              FROM stock_magasin sm
              INNER JOIN produits p ON sm.id_produit = p.id_produit
              LEFT JOIN unites u ON p.id_unite = u.id_unite
