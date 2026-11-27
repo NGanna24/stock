@@ -73,6 +73,7 @@ import PermissionRoutes from './routes/PermissionRoutes.js';
 import { controleAcces } from './utils/permissions.js';
 import NotificationRoutes from './routes/NotificationRoutes.js';
 import { demarrerNotificationsPush } from './Services/notificationsPush.js';
+import { demarrerEffacementAutomatique } from './Services/SuppressionCompte.js';
 import { limiterParAppareil } from './utils/securite.js';
 
 // ==================== CONFIGURATION ENVIRONNEMENT ====================
@@ -244,6 +245,8 @@ const startServer = async () => {
             console.log(` [Server] http://localhost:${PORT}`);
             // Stock bas, résumé du soir, fin d'abonnement → téléphone du patron
             demarrerNotificationsPush();
+            // Comptes dont la suppression a été demandée il y a plus de 30 jours
+            demarrerEffacementAutomatique();
         });
  
         // Gestion des erreurs de démarrage du serveur

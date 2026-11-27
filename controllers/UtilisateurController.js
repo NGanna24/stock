@@ -11,6 +11,7 @@ import { urlPhoto, supprimerPhoto } from '../middleware/uploadPhotoProfil.js';
 import {
     signerJeton, minutesDeBlocage, noterEchec, effacerEchecs, versionSession, revoquerSessions, MAX_ESSAIS, BLOCAGE_MINUTES,
 } from '../utils/securite.js';
+import { demanderSuppression, dateEffacement } from '../Services/SuppressionCompte.js';
 
 const DEFAULT_COUNTRY = 'CI'; // Pays par défaut pour parser les numéros locaux
 
@@ -339,6 +340,14 @@ class UtilisateurController {
             if (!user.actif) {
                 console.log('❌ [LOGIN] ÉCHEC → Compte désactivé (actif =', user.actif, ')');
                 console.log('═══════════════════════════════════════════════════');
+                if (type === 'utilisateur' && user.suppression_demandee_le) {
+                    const le = dateEffacement(user.suppression_demandee_le).toLocaleDateString('fr-FR');
+                    return res.status(403).json({
+                        success: false,
+                        code: 'COMPTE_EN_SUPPRESSION',
+                        message: `Ce compte est en cours de suppression : il sera effacé le ${le}. Pour l'annuler, appelez le 07 12 56 69 56.`
+                    });
+                }
                 return res.status(403).json({
                     success: false,
                     message: 'Compte désactivé. Veuillez contacter l\'administrateur.'
@@ -545,6 +554,35 @@ return res.status(200).json({
         } catch (error) {
             console.error('❌ Déconnecter partout :', error);
             return res.status(500).json({ success: false, message: 'Erreur lors de la déconnexion des appareils' });
+        }
+    }
+
+    /**
+     * POST /api/utilisateur/supprimer-compte { password }
+     * Réservé au patron. Bloque tout de suite le compte et les employés ; tout est effacé 30 jours plus tard.
+     */
+    static async supprimerCompte(req, res) {
+        try {
+            if (req.user.type === 'employe') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Seul le patron peut supprimer le compte de la boutique. Demandez-lui de supprimer votre accès.'
+                });
+            }
+            const { password } = req.body || {};
+            if (!password || !(await Utilisateur.verifyPassword(req.user.id, password))) {
+                return res.status(400).json({ success: false, message: 'Mot de passe incorrect.' });
+            }
+            const { date_effacement } = await demanderSuppression(req.user.id);
+            console.log(` [Suppression] Demande du compte ${req.user.id}, effacement prévu le ${date_effacement.toISOString().slice(0, 10)}`);
+            return res.json({
+                success: true,
+                date_effacement,
+                message: `Votre compte est supprimé. Toutes les données de la boutique seront effacées le ${date_effacement.toLocaleDateString('fr-FR')}. Pour annuler d'ici là, appelez le 07 12 56 69 56.`
+            });
+        } catch (error) {
+            console.error('Suppression du compte :', error);
+            return res.status(500).json({ success: false, message: 'Erreur lors de la suppression du compte' });
         }
     }
 

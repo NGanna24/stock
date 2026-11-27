@@ -23,6 +23,9 @@ router.post('/verifier-code', limiterParAppareil('deverrouillage', 20, 15), auth
 router.post('/deconnecter-partout', authenticateToken, UtilisateurController.deconnecterPartout);
 router.post('/logout', UtilisateurController.logout);
 
+// Suppression du compte par le patron (exigence Google Play) : effacement 30 jours après la demande
+router.post('/supprimer-compte', limiterParAppareil('suppression-compte', 5, 60), authenticateToken, UtilisateurController.supprimerCompte);
+
 // Réinitialisation de mot de passe (uniquement utilisateurs/patrons)
 router.post('/forgot-password', limiterParAppareil('mot-de-passe-oublie', 5, 15), UtilisateurController.forgotPassword);
 router.post('/verify-reset-code', limiterParAppareil('code-reinitialisation', 10, 15), UtilisateurController.verifyResetCode);

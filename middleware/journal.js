@@ -58,7 +58,7 @@ const SOUS_ENTREPOT = {
 };
 
 // Routes jamais journalisées (pas de modification de données)
-const IGNORES = [/^\/utilisateur\/(renouveler|verifier-code|logout)\b/, /^\/ping\b/, /^\/notifications\b/, /^\/gpt\b/, /^\/search\b/, /^\/super-admin\b/, /^\/admin\b/, /\/export\b/];
+const IGNORES = [/^\/utilisateur\/(renouveler|verifier-code|logout)\b/, /^\/ping\b/, /^\/notifications\b/, /^\/gpt\b/, /^\/search\b/, /^\/super-admin\b/, /^\/admin\b/, /\/export\b/, /^\/produits\/import\/apercu\b/];
 
 // Actions particulières reconnues dans le chemin (dernier segment non numérique)
 const ACTIONS_SPECIALES = {
@@ -206,6 +206,7 @@ export function decrire(methode, chemin) {
     else if (segments[0] === 'hors-ligne' && methode === 'POST') return { module, action: 'creation', libelle: 'a envoyé des ventes faites hors ligne', segments };
     else if (segments[0] === 'utilisateur' && dernier === 'deconnecter-partout') return { module, action: 'securite', libelle: 'a déconnecté tous ses appareils', segments };
     else if (segments[0] === 'clients' && dernier === 'fusionner') return { module, action: 'modification', libelle: 'a fusionné deux fiches client', segments };
+    else if (segments[0] === 'produits' && segments[1] === 'import' && methode === 'POST') return { module, action: 'creation', libelle: 'a importé des produits depuis Excel', segments };
     else if (segments[0] === 'relances' && methode === 'POST') return { module, action: 'relance', libelle: 'a relancé le client', segments };
     else if (segments[0] === 'caisse' && (dernier === 'ouvrir' || dernier === 'cloturer')) libelle = `${verbe} la caisse`;
     else libelle = `${verbe} ${objet}`;

@@ -61,6 +61,9 @@ const COLONNES = [
     ['utilisateurs', 'tentatives_echouees', 'INT NOT NULL DEFAULT 0'],
     ['utilisateurs', 'bloque_jusqua', 'DATETIME NULL'],
     ['utilisateurs', 'session_version', 'INT NOT NULL DEFAULT 1'],
+    // ---------- Suppression du compte demandée depuis l'application (effacement à 30 jours) ----------
+    ['utilisateurs', 'suppression_demandee_le', 'DATETIME NULL'],
+    ['employes', 'bloque_par_suppression', 'TINYINT(1) NOT NULL DEFAULT 0'],
     ['employes', 'tentatives_echouees', 'INT NOT NULL DEFAULT 0'],
     ['employes', 'bloque_jusqua', 'DATETIME NULL'],
     ['employes', 'session_version', 'INT NOT NULL DEFAULT 1'],

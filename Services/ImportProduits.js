@@ -24,7 +24,7 @@ const normaliser = (s) =>
     .toLowerCase()
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/[^a-z0-9+]+/g, ' ')
     .trim();
 
 const propre = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -255,6 +255,8 @@ function distance(a, b) {
 const ressemble = (x, y) => {
   const a = normaliser(x).replace(/\s+/g, '');
   const b = normaliser(y).replace(/\s+/g, '');
+  // « GN125+ » et « GN125++ » : tailles différentes, pas une faute de frappe
+  if (a.replace(/\+/g, '') === b.replace(/\+/g, '') && a !== b) return false;
   if (!a || !b || a === b) return a === b && a !== '' && normaliser(x) !== normaliser(y);
   const max = Math.min(a.length, b.length) <= 5 ? 1 : 2;
   return distance(a, b) <= max;
@@ -283,19 +285,63 @@ async function nomsExistants(workspaceId) {
  * Les lignes « attention » s'importent quand même (le message dit ce qui manque).
  * Fournisseur ou unité vides : on prendra ceux choisis à l'écran (par défaut).
  */
-export async function analyser(lignesBrutes, workspaceId) {
+export async function analyser(lignesBrutes, workspaceId, { mettreAJour = false } = {}) {
   const [existants] = await pool.execute(
-    `SELECT p.nom, md.nom AS modele, m.nom AS marque
+    `SELECT p.id_produit, p.nom, md.nom AS modele, m.nom AS marque, p.prix_achat, p.prix_vente
        FROM produits p
        LEFT JOIN modeles md ON p.id_modele = md.id_modele
        LEFT JOIN marques m ON p.id_marque = m.id_marque
       WHERE p.id_utilisateur = ?`,
     [workspaceId]
   );
-  const dejaLa = new Set(existants.map((p) => cle(p.nom, p.modele, p.marque)));
+  const dejaLa = new Map(existants.map((p) => [cle(p.nom, p.modele, p.marque), p]));
+  // Cartons déjà enregistrés (pour savoir ce qu'une mise à jour changerait)
+  const cartons = new Map();
+  if (mettreAJour && existants.length) {
+    const [uv] = await pool.execute(
+      `SELECT uv.id_produit, uv.quantite_base, uv.prix_vente, uv.prix_achat, uv.nom
+         FROM unites_vente uv JOIN produits p ON p.id_produit = uv.id_produit
+        WHERE p.id_utilisateur = ? AND uv.actif = TRUE`,
+      [workspaceId]
+    );
+    for (const u of uv) if (normaliser(u.nom) === 'carton') cartons.set(u.id_produit, u);
+  }
   const vus = new Map();
 
-  const lignes = (Array.isArray(lignesBrutes) ? lignesBrutes : []).slice(0, MAX_LIGNES).map((b, i) => {
+  // Même produit écrit deux fois dans le fichier (relevé papier recopié deux fois) :
+  //  - informations identiques, ou une ligne qui complète l'autre : on fusionne dans la 1re ligne
+  //    et la seconde est simplement ignorée ;
+  //  - informations différentes (ex : carton de 100 et carton de 20) : erreur, l'utilisateur choisit.
+  const brutes = (Array.isArray(lignesBrutes) ? lignesBrutes : []).slice(0, MAX_LIGNES).map((b) => ({ ...b }));
+  const CHAMPS_TEXTE = ['fournisseur', 'categorie', 'description', 'unite', 'emplacement', 'rayon', 'etagere'];
+  const vide = (v) => v === null || v === undefined || propre(v) === '';
+  const premieres = new Map();
+  for (const [i, b] of brutes.entries()) {
+    const k = cle(texte(b.nom, 100), texte(b.modele, 100), texte(b.marque, 100));
+    if (!normaliser(b.nom)) continue;
+    const premiere = premieres.get(k);
+    if (!premiere) { premieres.set(k, b); continue; }
+    const differences = [];
+    for (const champ of [...NOMBRES, ...CHAMPS_TEXTE]) {
+      if (vide(b[champ])) continue;
+      if (vide(premiere[champ])) continue;
+      const egal = NOMBRES.includes(champ)
+        ? nombre(b[champ]) === nombre(premiere[champ])
+        : normaliser(b[champ]) === normaliser(premiere[champ]);
+      if (!egal) differences.push(LIBELLES[champ]);
+    }
+    const lignePremiere = premiere.ligne_excel || brutes.indexOf(premiere) + 2;
+    if (differences.length) {
+      b._conflit = { ligne: lignePremiere, champs: differences };
+    } else {
+      // Complète la 1re ligne avec ce qu'elle n'avait pas
+      for (const champ of [...NOMBRES, ...CHAMPS_TEXTE]) if (vide(premiere[champ]) && !vide(b[champ])) premiere[champ] = b[champ];
+      b._doublon = lignePremiere;
+    }
+    void i;
+  }
+
+  const lignes = brutes.map((b, i) => {
     const erreurs = [];
     const alertes = [];
     const l = {
@@ -337,9 +383,16 @@ export async function analyser(lignesBrutes, workspaceId) {
     }
 
     // Carton : comme dans le formulaire, il faut sa quantité (pièces) et son prix de vente
-    const pieces = n.pieces_par_carton !== null ? Math.round(n.pieces_par_carton) : null;
+    let pieces = n.pieces_par_carton !== null ? Math.round(n.pieces_par_carton) : null;
     const aCarton = n.prix_vente_carton > 0 || n.prix_achat_carton > 0 || n.stock_cartons > 0;
-    if (aCarton && !(pieces > 1)) {
+    if (aCarton && pieces === 1) {
+      // « 1 pièce par carton » (bidon de 20 L…) : ce n'est pas un carton, le produit se vend à l'unité
+      alertes.push('1 pièce par carton : pas de carton créé, le produit se vend à l\'unité.');
+      pieces = null;
+      n.prix_vente_carton = null;
+      n.prix_achat_carton = null;
+      n.stock_cartons = null;
+    } else if (aCarton && !(pieces > 1)) {
       erreurs.push('Indique combien de pièces contient 1 carton, sinon Miyo ne peut pas compter les cartons.');
     }
     if (pieces > 1 && !(n.prix_vente_carton > 0) && (n.prix_achat_carton > 0 || n.stock_cartons > 0)) {
@@ -363,9 +416,9 @@ export async function analyser(lignesBrutes, workspaceId) {
     // Ancienne fiche : carton et prix de gros deviennent des unités de vente
     if (pieces > 1 && n.prix_vente_carton > 0) {
       unitesVente.push({ nom: 'Carton', quantite_base: pieces, prix_vente: n.prix_vente_carton,
-        prix_achat: n.prix_achat_carton || (n.prix_achat || 0) * pieces });
+        prix_achat: n.prix_achat_carton || (n.prix_achat || 0) * pieces, auto: true });
     }
-    if (n.prix_gros > 0) unitesVente.push({ nom: 'Gros', quantite_base: 1, prix_vente: n.prix_gros, prix_achat: n.prix_achat || 0 });
+    if (n.prix_gros > 0) unitesVente.push({ nom: 'Gros', quantite_base: 1, prix_vente: n.prix_gros, prix_achat: n.prix_achat || 0, auto: true });
     const nomsUV = unitesVente.map((u) => normaliser(u.nom));
     if (new Set(nomsUV).size < nomsUV.length) erreurs.push('Deux unités de vente portent le même nom.');
 
@@ -387,13 +440,43 @@ export async function analyser(lignesBrutes, workspaceId) {
 
     let etat = erreurs.length ? 'erreur' : alertes.length ? 'attention' : 'pret';
     const k = cle(l.nom, l.modele, l.marque);
+    if (b._conflit) {
+      etat = 'erreur';
+      erreurs.unshift(`Même produit qu'à la ligne ${b._conflit.ligne}, mais avec des informations différentes (${b._conflit.champs.join(', ')}) : garde une seule ligne dans le fichier.`);
+    } else if (b._doublon) {
+      return {
+        ...l, prix_achat: n.prix_achat || 0, prix_vente: n.prix_vente || 0, prix_gros: 0, pieces_par_carton: null,
+        prix_achat_carton: 0, prix_vente_carton: 0, stock_pieces: 0, stock_cartons: 0, stock_total: 0,
+        quantite_minimale: 0, quantite_maximale: 0, unites_vente: [], id_produit_existant: null,
+        etat: 'doublon',
+        messages: [`Même produit qu'à la ligne ${b._doublon}, avec les mêmes informations : ligne ignorée (ses informations sont reprises par la ligne ${b._doublon}).`],
+      };
+    }
+    let id_produit_existant = null;
+    let changements = [];
     if (!erreurs.length) {
-      if (dejaLa.has(k)) {
-        etat = 'existe';
-        alertes.unshift('Déjà dans ta boutique : ignoré (modifie-le depuis sa fiche).');
-      } else if (vus.has(k)) {
+      if (vus.has(k) && !b._conflit) {
+        // Même produit deux fois dans le fichier : on ne choisit pas à la place de l'utilisateur
         etat = 'erreur';
         erreurs.push(`En double dans le fichier (même produit qu'à la ligne ${vus.get(k)}).`);
+      } else if (dejaLa.has(k)) {
+        const ex = dejaLa.get(k);
+        etat = 'existe';
+        if (mettreAJour) {
+          // On ne remplace jamais une valeur par une case vide
+          const cv = (pieces > 1 && n.prix_vente_carton > 0) ? { q: pieces, pv: n.prix_vente_carton, pa: n.prix_achat_carton || (n.prix_achat || 0) * pieces } : null;
+          const carton = cartons.get(ex.id_produit);
+          if (n.prix_achat > 0 && Number(ex.prix_achat) !== n.prix_achat) changements.push(`prix d'achat ${Number(ex.prix_achat) || 0} → ${n.prix_achat}`);
+          if (n.prix_vente > 0 && Number(ex.prix_vente) !== n.prix_vente) changements.push(`prix de vente ${Number(ex.prix_vente) || 0} → ${n.prix_vente}`);
+          if (cv && (!carton || Number(carton.quantite_base) !== cv.q || Number(carton.prix_vente) !== cv.pv || Number(carton.prix_achat) !== cv.pa)) {
+            changements.push(carton ? `carton ${Number(carton.quantite_base)} pièces à ${Number(carton.prix_vente)} → ${cv.q} pièces à ${cv.pv}` : `carton ajouté : ${cv.q} pièces à ${cv.pv}`);
+          }
+          if (changements.length) {
+            etat = 'maj';
+            id_produit_existant = ex.id_produit;
+            alertes.unshift(`Déjà dans ta boutique : sera mis à jour (${changements.join(', ')}).`);
+          } else alertes.unshift('Déjà dans ta boutique, rien à changer.');
+        } else alertes.unshift('Déjà dans ta boutique : ignoré (coche « Mettre à jour les produits déjà présents » pour compléter ses prix).');
       }
     }
     if (l.nom && !vus.has(k)) vus.set(k, b.ligne_excel || i + 2);
@@ -412,6 +495,7 @@ export async function analyser(lignesBrutes, workspaceId) {
       quantite_minimale: n.quantite_minimale || 0,
       quantite_maximale: n.quantite_maximale || 0,
       unites_vente: unitesVente,
+      id_produit_existant,
       etat,
       messages: [...erreurs, ...alertes],
     };
@@ -419,6 +503,7 @@ export async function analyser(lignesBrutes, workspaceId) {
 
   const compte = (e) => lignes.filter((x) => x.etat === e).length;
   const aImporter = lignes.filter((x) => x.etat === 'pret' || x.etat === 'attention');
+  const aMettreAJour = lignes.filter((x) => x.etat === 'maj');
   const connus = await nomsExistants(workspaceId);
   const nouveaux = (champ, table) => [
     ...new Map(
@@ -451,10 +536,14 @@ export async function analyser(lignesBrutes, workspaceId) {
       attention: compte('attention'),
       erreur: compte('erreur'),
       existe: compte('existe'),
-      a_importer: aImporter.length,
+      doublon: compte('doublon'),
+      maj: aMettreAJour.length,
+      a_creer: aImporter.length,
+      a_importer: aImporter.length + aMettreAJour.length,
       sans_prix_vente: aImporter.filter((x) => !(x.prix_vente > 0)).length,
       sans_fournisseur: aImporter.filter((x) => !x.fournisseur).length,
       sans_unite: aImporter.filter((x) => !x.unite).length,
+      sans_categorie: aImporter.filter((x) => !x.categorie).length,
       noms_proches: proches,
       nouveaux_fournisseurs: nouveaux('fournisseur', 'fournisseurs'),
       nouvelles_unites: nouveaux('unite', 'unites'),
@@ -476,10 +565,11 @@ export async function analyser(lignesBrutes, workspaceId) {
 // ------------------------------------------------------------
 const symboleDe = (nom) => normaliser(nom).replace(/\s+/g, '').slice(0, 3) || 'u';
 
-export async function importer({ lignes, id_fournisseur, id_unite }, workspaceId) {
-  const { lignes: verifiees } = await analyser(lignes, workspaceId); // on revérifie tout ici
+export async function importer({ lignes, id_fournisseur, id_unite, id_categorie, categorie_nom, mettre_a_jour = false }, workspaceId) {
+  const { lignes: verifiees } = await analyser(lignes, workspaceId, { mettreAJour: mettre_a_jour }); // on revérifie tout ici
   const aCreer = verifiees.filter((l) => l.etat === 'pret' || l.etat === 'attention');
-  if (!aCreer.length) {
+  const aMaj = verifiees.filter((l) => l.etat === 'maj');
+  if (!aCreer.length && !aMaj.length) {
     throw Object.assign(new Error('Aucun produit à importer : ils sont tous déjà dans ta boutique, ou en erreur dans le fichier.'), { status: 400 });
   }
 
@@ -500,6 +590,13 @@ export async function importer({ lignes, id_fournisseur, id_unite }, workspaceId
     const [[u]] = await pool.execute('SELECT id_unite FROM unites WHERE id_unite = ? AND id_utilisateur = ?', [idU, workspaceId]);
     if (!u) throw Object.assign(new Error('Unité par défaut introuvable.'), { status: 400 });
   }
+  // Catégorie par défaut (lignes sans catégorie) : une catégorie existante, ou un nom à créer (ex : « Pièce »)
+  let idC = Number(id_categorie) || null;
+  if (idC) {
+    const [[c]] = await pool.execute('SELECT id_categorie FROM categories WHERE id_categorie = ? AND id_utilisateur = ?', [idC, workspaceId]);
+    if (!c) throw Object.assign(new Error('Catégorie par défaut introuvable.'), { status: 400 });
+  }
+  const nomCategorieDefaut = !idC ? texte(categorie_nom, 100) : null;
 
   const cnx = await pool.getConnection();
   const crees = { fournisseurs: 0, unites: 0, marques: 0, modeles: 0, categories: 0, emplacements: 0 };
@@ -545,14 +642,19 @@ export async function importer({ lignes, id_fournisseur, id_unite }, workspaceId
       return ins.insertId;
     };
 
+    if (nomCategorieDefaut && aCreer.some((l) => !l.categorie)) {
+      idC = await idPour('categories', 'id_categorie', nomCategorieDefaut, simple('categories'));
+    }
+
     let unitesVente = 0;
     let avecEmplacement = false;
+    let stocksInitiaux = 0;
     for (const l of aCreer) {
       const idFournisseur = l.fournisseur ? await idPour('fournisseurs', 'id_fournisseur', l.fournisseur, simple('fournisseurs')) : idF;
       const idUnite = l.unite ? await idPour('unites', 'id_unite', l.unite, creerUnite) : idU;
       const idMarque = await idPour('marques', 'id_marque', l.marque, simple('marques'));
       const idModele = await idPour('modeles', 'id_modele', l.modele, simple('modeles'));
-      const idCategorie = await idPour('categories', 'id_categorie', l.categorie, simple('categories'));
+      const idCategorie = l.categorie ? await idPour('categories', 'id_categorie', l.categorie, simple('categories')) : idC;
 
       let idEmp = null;
       if (l.emplacement) {
@@ -573,22 +675,66 @@ export async function importer({ lignes, id_fournisseur, id_unite }, workspaceId
       );
       const idProduit = res.insertId;
 
-      // Unités de vente : la première est la principale, comme dans le formulaire
+      // Unités de vente. La principale est celle proposée d'office à la vente : seule une unité
+      // saisie dans les colonnes « Unité de vente 1/2/3 » peut l'être (la 1re). Le carton et le
+      // gros repris des colonnes CARTON ne le sont jamais : la vente reste à la pièce par défaut.
       for (const [k, u] of (l.unites_vente || []).entries()) {
         await cnx.execute(
           `INSERT INTO unites_vente (id_produit, nom, quantite_base, prix_vente, prix_achat, est_principal, actif)
            VALUES (?, ?, ?, ?, ?, ?, TRUE)`,
-          [idProduit, u.nom, u.quantite_base, u.prix_vente, u.prix_achat || 0, k === 0]
+          [idProduit, u.nom, u.quantite_base, u.prix_vente, u.prix_achat || 0, k === 0 && !u.auto]
         );
         unitesVente++;
       }
+
+      // Stock de départ : tracé comme une entrée, pour que l'historique du produit soit juste
+      if (l.stock_total > 0) {
+        await cnx.execute(
+          `INSERT INTO mouvements_stock (id_utilisateur, id_produit, type_mouvement, quantite, ancienne_quantite, nouvelle_quantite, type_reference, notes)
+           VALUES (?, ?, 'entree', ?, 0, ?, 'import', 'Stock initial (import Excel)')`,
+          [workspaceId, idProduit, l.stock_total, l.stock_total]
+        );
+        stocksInitiaux++;
+      }
+    }
+
+    // Produits déjà présents : on complète prix et carton, sans jamais effacer une valeur
+    let misAJour = 0;
+    for (const l of aMaj) {
+      const champs = [];
+      const valeurs = [];
+      if (l.prix_achat > 0) { champs.push('prix_achat = ?'); valeurs.push(l.prix_achat); }
+      if (l.prix_vente > 0) { champs.push('prix_vente = ?'); valeurs.push(l.prix_vente); }
+      if (champs.length) {
+        await cnx.execute(`UPDATE produits SET ${champs.join(', ')} WHERE id_produit = ? AND id_utilisateur = ?`,
+          [...valeurs, l.id_produit_existant, workspaceId]);
+      }
+      const carton = (l.unites_vente || []).find((u) => u.auto && normaliser(u.nom) === 'carton');
+      if (carton) {
+        const [uvs] = await cnx.execute('SELECT id_unite_vente, nom FROM unites_vente WHERE id_produit = ?', [l.id_produit_existant]);
+        const ex = uvs.find((u) => normaliser(u.nom) === 'carton');
+        if (ex) {
+          await cnx.execute('UPDATE unites_vente SET quantite_base = ?, prix_vente = ?, prix_achat = ?, actif = TRUE WHERE id_unite_vente = ?',
+            [carton.quantite_base, carton.prix_vente, carton.prix_achat || 0, ex.id_unite_vente]);
+        } else {
+          await cnx.execute(
+            `INSERT INTO unites_vente (id_produit, nom, quantite_base, prix_vente, prix_achat, est_principal, actif)
+             VALUES (?, 'Carton', ?, ?, ?, FALSE, TRUE)`,
+            [l.id_produit_existant, carton.quantite_base, carton.prix_vente, carton.prix_achat || 0]
+          );
+          unitesVente++;
+        }
+      }
+      misAJour++;
     }
 
     await cnx.commit();
     if (avecEmplacement) await EmplacementMagasin.synchroniser(workspaceId).catch(() => {});
     return {
       crees: aCreer.length,
-      ignores: verifiees.length - aCreer.length,
+      mis_a_jour: misAJour,
+      stocks_initiaux: stocksInitiaux,
+      ignores: verifiees.length - aCreer.length - misAJour,
       unites_vente: unitesVente,
       sans_prix_vente: aCreer.filter((l) => !(l.prix_vente > 0)).length,
       nouveaux: crees,
